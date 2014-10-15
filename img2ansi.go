@@ -188,6 +188,7 @@ func (p *Palette256) ANSI(c color.Color) string {
 	return fmt.Sprintf("\033[48;5;%dm", r*6*6+g*6+b+begin)
 }
 
+// Distance computes euclidean distance between the RGB values of c1 and c2.
 func Distance(c1, c2 color.Color) float64 {
 	r1, g1, b1, _ := c1.RGBA()
 	r2, g2, b2, _ := c2.RGBA()
