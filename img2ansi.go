@@ -24,6 +24,7 @@ func init() {
 }
 
 func main() {
+	width := flag.Int("width", 0, "desired width in terminal columns")
 	pad := flag.Bool("pad", false, "pad output on the left with whitespace")
 	paletteName := flag.String("color", "256", "color palette (8, 256, gray, ...)")
 	fontAspect := flag.Float64("fontaspect", 0.5, "aspect ratio (width/height)")
@@ -46,9 +47,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("image: %v", err)
 	}
-	sizenorm := normalSize(img.Bounds().Size(), *fontAspect)
-	imgnorm := resize.Resize(uint(sizenorm.X), uint(sizenorm.Y), img, 0)
-	err = writePixelsANSI(os.Stdout, imgnorm, palette, *pad)
+
+	// resize img to the proper width and aspect ratio
+	size := img.Bounds().Size()
+	if *width > 0 {
+		size = sizeWidth(size, *width, *fontAspect)
+	} else {
+		size = sizeNormal(size, *fontAspect)
+	}
+	img = resize.Resize(uint(size.X), uint(size.Y), img, 0)
+
+	err = writePixelsANSI(os.Stdout, img, palette, *pad)
 	if err != nil {
 		log.Fatalf("write: %v", err)
 	}
@@ -86,9 +95,19 @@ func readImage(filename string) (image.Image, string, error) {
 	return img, format, nil
 }
 
-// normalSize scales size according to aspect ratio fontAspect and returns the
+// sizeWidth returns a point with X equal to width and the same normalized
+// aspect ratio as size.
+func sizeWidth(size image.Point, width int, fontAspect float64) image.Point {
+	size = sizeNormal(size, fontAspect)
+	aspect := float64(size.X) / float64(size.Y)
+	size.X = width
+	size.Y = int(round(float64(width) / aspect))
+	return size
+}
+
+// sizeNormal scales size according to aspect ratio fontAspect and returns the
 // new size.
-func normalSize(size image.Point, fontAspect float64) image.Point {
+func sizeNormal(size image.Point, fontAspect float64) image.Point {
 	aspect := float64(size.X) / float64(size.Y)
 	norm := size
 	norm.Y = size.Y
