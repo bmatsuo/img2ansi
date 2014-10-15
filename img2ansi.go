@@ -19,6 +19,10 @@ import (
 
 const ANSIClear = "\033[0m"
 
+func init() {
+	log.SetFlags(0)
+}
+
 func main() {
 	pad := flag.Bool("pad", false, "pad output on the left with whitespace")
 	paletteName := flag.String("color", "256", "color palette (8, 256, gray, ...)")
