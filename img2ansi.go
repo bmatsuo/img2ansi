@@ -145,15 +145,15 @@ type ANSIPalette interface {
 }
 
 var ansiPalettes = map[string]ANSIPalette{
-	"256-precise": new(Palette256Precise),
-	"256":         new(Palette256),
-	"256-color":   new(Palette256),
-	"8":           DefaultPalette8,
-	"8-color":     DefaultPalette8,
-	"gray":        new(PaletteGray),
-	"grayscale":   new(PaletteGray),
-	"grey":        new(PaletteGray),
-	"greyscale":   new(PaletteGray),
+	"256":       new(Palette256Precise),
+	"256-color": new(Palette256Precise),
+	"256-fast":  new(Palette256),
+	"8":         DefaultPalette8,
+	"8-color":   DefaultPalette8,
+	"gray":      new(PaletteGray),
+	"grayscale": new(PaletteGray),
+	"grey":      new(PaletteGray),
+	"greyscale": new(PaletteGray),
 }
 
 func ANSIPalettes() []string {
