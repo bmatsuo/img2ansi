@@ -92,7 +92,6 @@ func writePixelsANSI(w io.Writer, img image.Image, p ANSIPalette, pad bool) erro
 			color := img.At(rect.Min.X+x, rect.Min.Y+y)
 			wbuf.WriteString(p.ANSI(color))
 			wbuf.Write(spaceBytes)
-
 		}
 		wbuf.WriteString(ANSIClear)
 		wbuf.Write(lineBytes)
@@ -138,7 +137,7 @@ func sizeNormal(size image.Point, fontAspect float64) image.Point {
 
 // round x to the nearest integer biased toward +Inf.
 func round(x float64) float64 {
-	return math.Ceil(x - 0.5)
+	return math.Floor(x + 0.5)
 }
 
 type ANSIPalette interface {
@@ -182,19 +181,33 @@ func (p *PaletteGray) ANSI(c color.Color) string {
 	return "\033[48;5;" + strconv.Itoa(value) + "m"
 }
 
+// Color8 represents the set of colors in an 8-color palette.
+type Color8 uint
+
+const (
+	Black Color8 = iota
+	Red
+	Green
+	Orange // or brown or yellow
+	Blue
+	Magenta
+	Cyan
+	Gray
+)
+
 // Palette8 is an ANSIPalette that maps color.Color values to one of 8 color
 // indexes by minimizing euclidean RGB distance.
 type Palette8 [8][3]uint8
 
 var DefaultPalette8 = &Palette8{
-	{0, 0, 0},       // black
-	{191, 25, 25},   // red
-	{25, 184, 25},   // green
-	{188, 110, 25},  // orange/brown/yellow
-	{25, 25, 184},   // blue
-	{186, 25, 186},  // magenta
-	{25, 187, 187},  // cyan
-	{178, 178, 178}, // gray
+	Black:   {0, 0, 0},
+	Red:     {191, 25, 25},
+	Green:   {25, 184, 25},
+	Orange:  {188, 110, 25},
+	Blue:    {25, 25, 184},
+	Magenta: {186, 25, 186},
+	Cyan:    {25, 187, 187},
+	Gray:    {178, 178, 178},
 }
 
 func (p *Palette8) ANSI(c color.Color) string {
@@ -205,8 +218,12 @@ func (p *Palette8) ANSI(c color.Color) string {
 	min := math.Inf(1) // minimum distance from c
 	var imin int       // minimizing index
 	for i, rgb := range *p {
-		other := color.RGBA{rgb[0], rgb[1], rgb[2], 0}
-		dist := Distance(other, c)
+		c2 := color.RGBA{
+			R: rgb[0],
+			G: rgb[1],
+			B: rgb[2],
+		}
+		dist := Distance(c2, c)
 		if dist < min {
 			min = dist
 			imin = i
