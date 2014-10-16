@@ -86,11 +86,13 @@ func writePixelsANSI(w io.Writer, img image.Image, p ANSIPalette, pad bool) erro
 	for y := 0; y < size.Y; y++ {
 		if pad {
 			wbuf.Write(spaceBytes)
-			wbuf.Write(spaceBytes)
 		}
 		for x := 0; x < size.X; x++ {
 			color := img.At(rect.Min.X+x, rect.Min.Y+y)
 			wbuf.WriteString(p.ANSI(color))
+			wbuf.Write(spaceBytes)
+		}
+		if pad {
 			wbuf.Write(spaceBytes)
 		}
 		wbuf.WriteString(ANSIClear)
