@@ -197,17 +197,17 @@ const (
 
 // Palette8 is an ANSIPalette that maps color.Color values to one of 8 color
 // indexes by minimizing euclidean RGB distance.
-type Palette8 [8][3]uint8
+type Palette8 [8]color.Color
 
 var DefaultPalette8 = &Palette8{
-	Black:   {0, 0, 0},
-	Red:     {191, 25, 25},
-	Green:   {25, 184, 25},
-	Orange:  {188, 110, 25},
-	Blue:    {25, 25, 184},
-	Magenta: {186, 25, 186},
-	Cyan:    {25, 187, 187},
-	Gray:    {178, 178, 178},
+	Black:   &color.RGBA{R: 0, G: 0, B: 0},
+	Red:     &color.RGBA{R: 191, G: 25, B: 25},
+	Green:   &color.RGBA{R: 25, G: 184, B: 25},
+	Orange:  &color.RGBA{R: 188, G: 110, B: 25},
+	Blue:    &color.RGBA{R: 25, G: 25, B: 184},
+	Magenta: &color.RGBA{R: 186, G: 25, B: 186},
+	Cyan:    &color.RGBA{R: 25, G: 187, B: 187},
+	Gray:    &color.RGBA{R: 178, G: 178, B: 178},
 }
 
 func (p *Palette8) ANSI(c color.Color) string {
@@ -215,17 +215,10 @@ func (p *Palette8) ANSI(c color.Color) string {
 	if a == 0 {
 		return ANSIClear
 	}
-	min := math.Inf(1) // minimum distance from c
-	var imin int       // minimizing index
-	for i, rgb := range *p {
-		c2 := color.RGBA{
-			R: rgb[0],
-			G: rgb[1],
-			B: rgb[2],
-		}
-		dist := Distance(c2, c)
-		if dist < min {
-			min = dist
+	var imin int // minimizing index
+	cpalette := color.Palette((*p)[:]).Convert(c)
+	for i, c2 := range *p {
+		if c2 == cpalette {
 			imin = i
 		}
 	}
@@ -248,14 +241,4 @@ func (p *Palette256) ANSI(c color.Color) string {
 	b := int(round(ratio * float64(bf)))
 	val := r*6*6 + g*6 + b + begin
 	return "\033[48;5;" + strconv.Itoa(val) + "m"
-}
-
-// Distance computes euclidean distance between the RGB values of c1 and c2.
-func Distance(c1, c2 color.Color) float64 {
-	r1, g1, b1, _ := c1.RGBA()
-	r2, g2, b2, _ := c2.RGBA()
-	rdiff := float64(int(r1) - int(r2))
-	gdiff := float64(int(g1) - int(g2))
-	bdiff := float64(int(b1) - int(b2))
-	return math.Sqrt(rdiff*rdiff + gdiff*gdiff + bdiff*bdiff)
 }
