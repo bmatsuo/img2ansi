@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"flag"
-	"fmt"
 	"image"
 	"image/color"
 	_ "image/gif"
@@ -13,6 +12,8 @@ import (
 	"log"
 	"math"
 	"os"
+	"runtime/pprof"
+	"strconv"
 
 	"github.com/nfnt/resize"
 )
@@ -24,11 +25,21 @@ func init() {
 }
 
 func main() {
+	cpuprofile := flag.String("cpuprofile", "", "path of pprof CPU profile output")
 	width := flag.Int("width", 0, "desired width in terminal columns")
 	pad := flag.Bool("pad", false, "pad output on the left with whitespace")
 	paletteName := flag.String("color", "256", "color palette (8, 256, gray, ...)")
 	fontAspect := flag.Float64("fontaspect", 0.5, "aspect ratio (width/height)")
 	flag.Parse()
+
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 
 	palette := ansiPalettes[*paletteName]
 	if palette == nil {
@@ -63,19 +74,26 @@ func main() {
 	}
 }
 
+var lineBytes = []byte{'\n'}
+var spaceBytes = []byte{' '}
+
 func writePixelsANSI(w io.Writer, img image.Image, p ANSIPalette, pad bool) error {
 	wbuf := bufio.NewWriter(w)
 	rect := img.Bounds()
 	size := rect.Size()
 	for y := 0; y < size.Y; y++ {
 		if pad {
-			fmt.Fprint(wbuf, "  ")
+			wbuf.Write(spaceBytes)
+			wbuf.Write(spaceBytes)
 		}
 		for x := 0; x < size.X; x++ {
 			color := img.At(rect.Min.X+x, rect.Min.Y+y)
-			fmt.Fprint(wbuf, p.ANSI(color)+" ")
+			io.WriteString(wbuf, p.ANSI(color))
+			wbuf.Write(spaceBytes)
+
 		}
-		fmt.Fprintln(wbuf, ANSIClear)
+		io.WriteString(wbuf, ANSIClear)
+		wbuf.Write(lineBytes)
 	}
 	return wbuf.Flush()
 }
@@ -158,7 +176,8 @@ func (p *PaletteGray) ANSI(c color.Color) string {
 	}
 	gray := color.GrayModel.Convert(c).(color.Gray).Y
 	scaled := int(round(ratio * float64(gray)))
-	return fmt.Sprintf("\033[48;5;%dm", scaled+begin)
+	value := scaled + begin
+	return "\033[48;5;" + strconv.Itoa(value) + "m"
 }
 
 // Palette8 is an ANSIPalette that maps color.Color values to one of 8 color
@@ -191,7 +210,7 @@ func (p *Palette8) ANSI(c color.Color) string {
 			imin = i
 		}
 	}
-	return fmt.Sprintf("\033[4%dm", imin)
+	return "\033[4" + strconv.Itoa(imin) + "m"
 }
 
 // Palette256 is an ANSIPalette that maps color.Color to one of 256 RGB colors.
@@ -208,7 +227,8 @@ func (p *Palette256) ANSI(c color.Color) string {
 	r := int(round(ratio * float64(rf)))
 	g := int(round(ratio * float64(gf)))
 	b := int(round(ratio * float64(bf)))
-	return fmt.Sprintf("\033[48;5;%dm", r*6*6+g*6+b+begin)
+	val := r*6*6 + g*6 + b + begin
+	return "\033[48;5;" + strconv.Itoa(val) + "m"
 }
 
 // Distance computes euclidean distance between the RGB values of c1 and c2.
