@@ -145,14 +145,15 @@ type ANSIPalette interface {
 }
 
 var ansiPalettes = map[string]ANSIPalette{
-	"256":       new(Palette256),
-	"256-color": new(Palette256),
-	"8":         DefaultPalette8,
-	"8-color":   DefaultPalette8,
-	"gray":      new(PaletteGray),
-	"grayscale": new(PaletteGray),
-	"grey":      new(PaletteGray),
-	"greyscale": new(PaletteGray),
+	"256-precise": new(Palette256Precise),
+	"256":         new(Palette256),
+	"256-color":   new(Palette256),
+	"8":           DefaultPalette8,
+	"8-color":     DefaultPalette8,
+	"gray":        new(PaletteGray),
+	"grayscale":   new(PaletteGray),
+	"grey":        new(PaletteGray),
+	"greyscale":   new(PaletteGray),
 }
 
 func ANSIPalettes() []string {
@@ -240,5 +241,16 @@ func (p *Palette256) ANSI(c color.Color) string {
 	g := int(round(ratio * float64(gf)))
 	b := int(round(ratio * float64(bf)))
 	val := r*6*6 + g*6 + b + begin
+	return "\033[48;5;" + strconv.Itoa(val) + "m"
+}
+
+type Palette256Precise struct{}
+
+func (p *Palette256Precise) ANSI(c color.Color) string {
+	_, _, _, a := c.RGBA()
+	if a == 0 {
+		return ANSIClear
+	}
+	val := palette256.Index(c)
 	return "\033[48;5;" + strconv.Itoa(val) + "m"
 }
