@@ -34,10 +34,10 @@ func main() {
 	pad := flag.Bool("pad", false, "pad output on the left with whitespace")
 	paletteName := flag.String("color", "256", "color palette (8, 256, gray, ...)")
 	fontAspect := flag.Float64("fontaspect", 0.5, "aspect ratio (width/height)")
-	alphaThreshold := flag.Uint("alphamin", uint(AlphaThreshold), "alpha transparency threshold")
+	alphaThreshold := flag.Float64("alphamin", 1.0, "transparency threshold")
 	flag.Parse()
 
-	AlphaThreshold = uint32(*alphaThreshold)
+	AlphaThreshold = uint32(*alphaThreshold * float64(0xffff))
 
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
