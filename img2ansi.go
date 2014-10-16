@@ -21,6 +21,8 @@ import (
 
 const ANSIClear = "\033[0m"
 
+var AlphaThreshold = uint32(0xffff)
+
 func init() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	log.SetFlags(0)
@@ -32,7 +34,10 @@ func main() {
 	pad := flag.Bool("pad", false, "pad output on the left with whitespace")
 	paletteName := flag.String("color", "256", "color palette (8, 256, gray, ...)")
 	fontAspect := flag.Float64("fontaspect", 0.5, "aspect ratio (width/height)")
+	alphaThreshold := flag.Uint("alphamin", uint(AlphaThreshold), "alpha transparency threshold")
 	flag.Parse()
+
+	AlphaThreshold = uint32(*alphaThreshold)
 
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
@@ -68,7 +73,9 @@ func main() {
 	} else {
 		size = sizeNormal(size, *fontAspect)
 	}
-	img = resize.Resize(uint(size.X), uint(size.Y), img, 0)
+	if size != img.Bounds().Size() {
+		img = resize.Resize(uint(size.X), uint(size.Y), img, 0)
+	}
 
 	err = writePixelsANSI(os.Stdout, img, palette, *pad)
 	if err != nil {
@@ -175,7 +182,7 @@ func (p *PaletteGray) ANSI(c color.Color) string {
 	const begin = 0xe8
 	const ratio = 24.0 / 255.0
 	_, _, _, a := c.RGBA()
-	if a == 0 {
+	if a < AlphaThreshold {
 		return ANSIClear
 	}
 	gray := color.GrayModel.Convert(c).(color.Gray).Y
@@ -215,7 +222,7 @@ var DefaultPalette8 = &Palette8{
 
 func (p *Palette8) ANSI(c color.Color) string {
 	_, _, _, a := c.RGBA()
-	if a == 0 {
+	if a < AlphaThreshold {
 		return ANSIClear
 	}
 	var imin int // minimizing index
@@ -236,7 +243,7 @@ func (p *Palette256) ANSI(c color.Color) string {
 	const begin = 16
 	const ratio = 5.0 / (1<<16 - 1)
 	rf, gf, bf, af := c.RGBA()
-	if af == 0 {
+	if af < AlphaThreshold {
 		return ANSIClear
 	}
 	r := int(round(ratio * float64(rf)))
@@ -250,7 +257,7 @@ type Palette256Precise struct{}
 
 func (p *Palette256Precise) ANSI(c color.Color) string {
 	_, _, _, a := c.RGBA()
-	if a == 0 {
+	if a < AlphaThreshold {
 		return ANSIClear
 	}
 	val := palette256.Index(c)
