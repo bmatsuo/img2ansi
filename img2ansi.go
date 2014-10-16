@@ -12,6 +12,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"strconv"
 
@@ -21,6 +22,7 @@ import (
 const ANSIClear = "\033[0m"
 
 func init() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 	log.SetFlags(0)
 }
 
