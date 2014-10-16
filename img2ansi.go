@@ -23,6 +23,11 @@ const ANSIClear = "\033[0m"
 
 var AlphaThreshold = uint32(0xffff)
 
+func IsTransparent(c color.Color, threshold uint32) bool {
+	_, _, _, a := c.RGBA()
+	return a < threshold
+}
+
 func init() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	log.SetFlags(0)
@@ -35,6 +40,7 @@ func main() {
 	paletteName := flag.String("color", "256", "color palette (8, 256, gray, ...)")
 	fontAspect := flag.Float64("fontaspect", 0.5, "aspect ratio (width/height)")
 	alphaThreshold := flag.Float64("alphamin", 1.0, "transparency threshold")
+	useStdin := flag.Bool("stdin", false, "read image data from stdin")
 	flag.Parse()
 
 	AlphaThreshold = uint32(*alphaThreshold * float64(0xffff))
@@ -53,15 +59,20 @@ func main() {
 		log.Fatalf("color palette not one of %q", ANSIPalettes())
 	}
 
-	if flag.NArg() < 1 {
-		log.Fatal("missing filename")
+	var img image.Image
+	var err error
+	if *useStdin {
+		img, _, err = image.Decode(os.Stdin)
+	} else {
+		if flag.NArg() < 1 {
+			log.Fatal("missing filename")
+		}
+		if flag.NArg() > 1 {
+			log.Fatal("unexpected arguments")
+		}
+		filename := flag.Arg(0)
+		img, _, err = readImage(filename)
 	}
-	if flag.NArg() > 1 {
-		log.Fatal("unexpected arguments")
-	}
-	filename := flag.Arg(0)
-
-	img, _, err := readImage(filename)
 	if err != nil {
 		log.Fatalf("image: %v", err)
 	}
@@ -181,8 +192,7 @@ type PaletteGray struct {
 func (p *PaletteGray) ANSI(c color.Color) string {
 	const begin = 0xe8
 	const ratio = 24.0 / 255.0
-	_, _, _, a := c.RGBA()
-	if a < AlphaThreshold {
+	if IsTransparent(c, AlphaThreshold) {
 		return ANSIClear
 	}
 	gray := color.GrayModel.Convert(c).(color.Gray).Y
@@ -221,8 +231,7 @@ var DefaultPalette8 = &Palette8{
 }
 
 func (p *Palette8) ANSI(c color.Color) string {
-	_, _, _, a := c.RGBA()
-	if a < AlphaThreshold {
+	if IsTransparent(c, AlphaThreshold) {
 		return ANSIClear
 	}
 	var imin int // minimizing index
@@ -256,8 +265,7 @@ func (p *Palette256) ANSI(c color.Color) string {
 type Palette256Precise struct{}
 
 func (p *Palette256Precise) ANSI(c color.Color) string {
-	_, _, _, a := c.RGBA()
-	if a < AlphaThreshold {
+	if IsTransparent(c, AlphaThreshold) {
 		return ANSIClear
 	}
 	val := palette256.Index(c)
