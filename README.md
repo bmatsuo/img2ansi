@@ -51,6 +51,6 @@ The size difference can be substantial for large images (like GIFs).
 
 For simple manipulation and combination of images and text unix-friendly tools
 like those provided by [ImageMagick](http://www.imagemagick.org/) can be piped
-directly into `img2ansi.
+directly into `img2ansi`.
 
     convert -background transparent -fill red -pointsize 72 label:"blorp" gif:- | img2ansi -scale
