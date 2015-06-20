@@ -4,7 +4,7 @@
 	animated).
 
 		img2ansi motd.png
-		img2ansi -animate -repeat=100 -width=78 https://i.imgur.com/872FDBm.gif
+		img2ansi -animate -repeat=5 -scale https://i.imgur.com/872FDBm.gif
 		img2ansi -h
 
 	The command takes as arguments URLs referencing images to render.  If no
