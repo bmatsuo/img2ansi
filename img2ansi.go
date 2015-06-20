@@ -86,51 +86,92 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	var imgs []image.Image
+	var frames <-chan image.Image
 	var err error
+	decodeErrors := make(chan error, 1)
 	if *useStdin || flag.NArg() == 0 {
-		imgs, err = readFrames(os.Stdin)
+		frames, err = decodeFrames(os.Stdin)
+		decodeErrors <- err
+		close(decodeErrors)
 	} else {
-		for _, filename := range flag.Args() {
-			var fimgs []image.Image
-			fimgs, err = readFramesURL(filename)
-			imgs = append(imgs, fimgs...)
-		}
-	}
-	if err != nil {
-		log.Fatal(err)
-	}
+		_frames := make(chan image.Image)
+		frames = _frames
+		concat := func() chan<- <-chan image.Image {
+			c := make(chan (<-chan image.Image))
+			go func() {
+				defer close(_frames)
+				for frames := range c {
+					for frame := range frames {
+						_frames <- frame
+					}
+				}
+			}()
+			return c
+		}()
 
-	// resize the images to the proper size and aspect ratio
-	for i, img := range imgs {
-		size := img.Bounds().Size()
-		if *scaleToTerm {
-			w, h, err := getTermDim()
-			if err != nil {
-				log.Fatal(err)
+		go func(errc chan<- error, concat chan<- <-chan image.Image, filenames []string) {
+			defer close(errc)
+			defer close(concat)
+			for _, filename := range filenames {
+				fileFrames, err := decodeFramesURL(filename)
+				if err != nil {
+					errc <- err
+					return
+				}
+				concat <- fileFrames
 			}
-
-			// correct for wrap/overflow due to newlines and padding.
-			w -= len(fopts.Pad)
-			h -= 1
-
-			size = sizeRect(size, w, h, *fontAspect)
-		} else if *height > 0 || *width > 0 {
-			size = sizeRect(size, *width, *height, *fontAspect)
-		} else {
-			size = sizeNormal(size, *fontAspect)
-		}
-
-		if size != img.Bounds().Size() { // it is super unlikely for this to happen
-			img = resize.Resize(uint(size.X), uint(size.Y), img, 0)
-		}
-
-		imgs[i] = img
+		}(decodeErrors, concat, flag.Args())
 	}
 
-	err = writeANSIFramePixels(os.Stdout, imgs, palette, fopts)
-	if err != nil {
-		log.Fatalf("write: %v", err)
+	if *scaleToTerm {
+		*width, *height, err = getTermDim()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// correct for wrap/overflow due to newlines and padding.
+		*width -= len(fopts.Pad)
+		*height -= 1
+	}
+
+	scaledFrames := make(chan image.Image, 5)
+	go func(scaled chan<- image.Image, width, height int, fontAspect float64, frames <-chan image.Image) {
+		defer close(scaled)
+		// resize the images to the proper size and aspect ratio
+		for img := range frames {
+			size := img.Bounds().Size()
+			size = sizeRect(size, width, height, fontAspect)
+			if size != img.Bounds().Size() { // it is super unlikely for this to happen
+				img = resize.Resize(uint(size.X), uint(size.Y), img, 0)
+			}
+			scaled <- img
+		}
+	}(scaledFrames, *width, *height, *fontAspect, frames)
+
+	writeErrors := make(chan error, 1)
+	go func() {
+		defer close(writeErrors)
+		writeErrors <- writeANSIFrames(os.Stdout, scaledFrames, palette, fopts)
+	}()
+
+	select {
+	case err := <-decodeErrors:
+		if err == nil {
+			err = <-writeErrors
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+	case err := <-writeErrors:
+		if err == nil {
+			select {
+			case err = <-decodeErrors:
+			default:
+			}
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 
@@ -148,6 +189,29 @@ type FrameOptions struct {
 	// Repeat is zero the frames are rendered just once.  If Repeat is less
 	// than zero the frames are rendered indefinitely.
 	Repeat int
+}
+
+// writeANSIFrames encodes images received over frames as ANSI escape sequences
+// using p and writes them to w.  writeANSIFrames does not use opts.Repeat.
+func writeANSIFrames(w io.Writer, frames <-chan image.Image, p ANSIPalette, opts *FrameOptions) error {
+	var rect image.Rectangle
+	animate := opts != nil && opts.Animate
+
+	for img := range frames {
+		if animate {
+			up := rect.Size().Y
+			rect = img.Bounds()
+			if up > 0 {
+				fmt.Fprintf(w, "\033[%dA", up)
+			}
+		}
+		err := writeANSIPixels(w, img, p, opts.Pad)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func writeANSIFramePixels(w io.Writer, imgs []image.Image, p ANSIPalette, opts *FrameOptions) error {
@@ -205,6 +269,23 @@ func writeANSIPixels(w io.Writer, img image.Image, p ANSIPalette, pad string) er
 	return wbuf.Flush()
 }
 
+func decodeFramesURL(urlstr string) (<-chan image.Image, error) {
+	u, err := url.Parse(urlstr)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "" {
+		return decodeFramesFile(urlstr)
+	}
+	if u.Scheme == "file" {
+		return decodeFramesFile(u.Path)
+	}
+	if u.Scheme == "http" || u.Scheme == "https" {
+		return decodeFramesHTTP(urlstr)
+	}
+	return nil, fmt.Errorf("unrecognized url: %v", urlstr)
+}
+
 func readFramesURL(urlstr string) ([]image.Image, error) {
 	u, err := url.Parse(urlstr)
 	if err != nil {
@@ -220,6 +301,35 @@ func readFramesURL(urlstr string) ([]image.Image, error) {
 		return readFramesHTTP(urlstr)
 	}
 	return nil, fmt.Errorf("unrecognized url: %v", urlstr)
+}
+
+func decodeFramesHTTP(u string) (<-chan image.Image, error) {
+	client := http.Client{
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("http: %v %v", resp.Status, u)
+	}
+	if resp.StatusCode >= 300 {
+		// TODO:
+		// Handle redirects better
+		return nil, fmt.Errorf("http: %v %v", resp.Status, u)
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("http: %v %v", resp.Status, u)
+	}
+	switch resp.Header.Get("Content-Type") {
+	case "application/octet-stream", "image/png", "image/gif", "image/jpeg":
+		return decodeFrames(resp.Body)
+	default:
+		return nil, fmt.Errorf("mime: %v %v", resp.Header.Get("Content-Type"), u)
+	}
 }
 
 func readFramesHTTP(u string) ([]image.Image, error) {
@@ -251,6 +361,15 @@ func readFramesHTTP(u string) ([]image.Image, error) {
 	}
 }
 
+func decodeFramesFile(filename string) (<-chan image.Image, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return decodeFrames(f)
+}
+
 func readFramesFile(filename string) ([]image.Image, error) {
 	f, err := os.Open(filename)
 	if err != nil {
@@ -258,6 +377,27 @@ func readFramesFile(filename string) ([]image.Image, error) {
 	}
 	defer f.Close()
 	return readFrames(f)
+}
+
+func decodeFrames(r io.Reader) (<-chan image.Image, error) {
+	var confbuf bytes.Buffer
+	_, format, err := image.DecodeConfig(io.TeeReader(r, &confbuf))
+	if err != nil {
+		return nil, err
+	}
+	r = io.MultiReader(&confbuf, r)
+	if format == "gif" {
+		return decodeFramesGIF(r)
+	}
+
+	c := make(chan image.Image, 1)
+	defer close(c)
+	img, _, err := image.Decode(r)
+	if err != nil {
+		return nil, err
+	}
+	c <- img
+	return c, nil
 }
 
 func readFrames(r io.Reader) ([]image.Image, error) {
@@ -277,22 +417,59 @@ func readFrames(r io.Reader) ([]image.Image, error) {
 	return []image.Image{img}, nil
 }
 
+func decodeFramesGIF(r io.Reader) (<-chan image.Image, error) {
+	img, err := gif.DecodeAll(r)
+	if err != nil {
+		return nil, err
+	}
+	delay := func() <-chan time.Time {
+		c := make(chan time.Time)
+		close(c)
+		return c
+	}()
+
+	const timeUnit = time.Second / 100
+	c := make(chan image.Image, len(img.Image))
+	go func() {
+		defer close(c)
+		log.Printf("loop count: %d", img.LoopCount)
+		log.Printf("delays: %v", img.Delay)
+		if img.LoopCount == 0 {
+			img.LoopCount = 10
+		}
+		for i := 0; i <= img.LoopCount; i++ {
+			delays := img.Delay
+			framesGIF(img, func(img image.Image) {
+				<-delay
+				c <- img
+				head := delays[0]
+				delays = delays[1:]
+				// BUG:
+				// time.After will produce additive error over time
+				delay = time.After(time.Duration(head) * timeUnit)
+			})
+		}
+	}()
+	return c, nil
+}
+
 func readFramesGIF(r io.Reader) ([]image.Image, error) {
 	img, err := gif.DecodeAll(r)
 	if err != nil {
 		return nil, err
 	}
-	return framesGIF(img), nil
+	var imgs []image.Image
+	framesGIF(img, func(img image.Image) { imgs = append(imgs, img) })
+	return imgs, nil
 }
 
 // framesGIF computes the raw frames of g by successively applying layers.
-func framesGIF(g *gif.GIF) []image.Image {
+func framesGIF(g *gif.GIF, fn func(img image.Image)) {
 	if len(g.Image) == 0 {
-		return nil
+		return
 	}
 
 	// determine the overall dimensions of the image.
-	var imgs []image.Image
 	rect := g.Image[0].Rect
 	for _, layer := range g.Image {
 		r := layer.Bounds()
@@ -315,10 +492,8 @@ func framesGIF(g *gif.GIF) []image.Image {
 		frame := image.NewRGBA64(rect)
 		r := img.Bounds()
 		draw.Draw(frame, r, img, r.Min, draw.Over)
-		imgs = append(imgs, frame)
+		fn(frame)
 	}
-
-	return imgs
 }
 
 // readImage reads an image.Image from a specified file.
@@ -336,11 +511,17 @@ func readImage(filename string) (image.Image, string, error) {
 	return img, format, nil
 }
 
-// sizeRect returns a point with coords less than or equal to the corresponding
-// coordinates of size and having the same aspect ratio.  sizeRect always
-// returns the largest such coordinates.
+// sizeRect returns a point with dimensions less than or equal to the
+// corresponding dimensions of size and having the same aspect ratio.  sizeRect
+// always returns the largest such coordinates.  In particular this means the
+// following expression evaluates true
+//
+//		sizeRect(size, 0, 0, fontAspect) == sizeNormal(size, fontAspect)
 func sizeRect(size image.Point, width, height int, fontAspect float64) image.Point {
 	size = sizeNormal(size, fontAspect)
+	if width <= 0 && height <= 0 {
+		return size
+	}
 	if width <= 0 {
 		return _sizeHeight(size, height)
 	}
