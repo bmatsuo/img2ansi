@@ -18,3 +18,24 @@ Image converter based on @saikobee's nifty [tool](https://github.com/saikobee/bi
 ###Documentation
 
 On [godoc.org](http://godoc.org/github.com/bmatsuo/img2ansi)
+
+####Saving images
+
+The output of `img2ansi` can be redirected to a file and replayed later using
+`cat`.
+
+    img2ansi https://i.imgur.com/872FDBm.gif > awesome
+    cat awesome
+
+Better yet, the output can be compressed using a program like `gzip`
+
+    img2ansi https://i.imgur.com/872FDBm.gif | gzip > awesome.gz
+    gzip -dc awesome.gz
+
+###Manipulating images
+
+For simple manipulation and combination of images and text unix-friendly tools
+like those provided by [ImageMagick](http://www.imagemagick.org/) can be piped
+directly into `img2ansi.
+
+    convert -background transparent -fill red -pointsize 72 label:"blorp" gif:- | img2ansi -scale
