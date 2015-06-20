@@ -26,7 +26,7 @@ So, while it natively supports GET requests against HTTP URLs you can pipe data
 in from `curl`, `netcat`, or whatever else.
 
     curl https://i.imgur.com/872FDBm.gif | img2ansi -animate -width=80 -repeat=5
-    netcat -lp 8000 > img2ansi -animate -width=80
+    netcat -lp 8000 | img2ansi -animate -width=80
 
 ####Saving images
 
