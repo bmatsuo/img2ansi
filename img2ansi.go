@@ -271,20 +271,37 @@ func readFramesGIF(r io.Reader) ([]image.Image, error) {
 
 // framesGIF computes the raw frames of g by successively applying layers.
 func framesGIF(g *gif.GIF) []image.Image {
+	if len(g.Image) == 0 {
+		return nil
+	}
+
+	// determine the overall dimensions of the image.
 	var imgs []image.Image
 	rect := g.Image[0].Rect
-	frame := image.NewRGBA64(rect)
 	for _, layer := range g.Image {
-		lrect := layer.Bounds()
-		draw.Draw(frame, lrect, layer, lrect.Min, draw.Over)
-
-		cp := new(image.RGBA64)
-		*cp = *frame
-		cp.Pix = make([]uint8, len(frame.Pix))
-		copy(cp.Pix, frame.Pix)
-
-		imgs = append(imgs, cp)
+		r := layer.Bounds()
+		if r.Min.X < rect.Min.X {
+			rect.Min.X = r.Min.X
+		}
+		if r.Min.Y < rect.Min.Y {
+			rect.Min.Y = r.Min.Y
+		}
+		if r.Max.X > rect.Max.X {
+			rect.Max.X = r.Max.X
+		}
+		if r.Max.Y > rect.Max.Y {
+			rect.Max.Y = r.Max.Y
+		}
 	}
+
+	// draw each frame within the larger rectangle
+	for _, img := range g.Image {
+		frame := image.NewRGBA64(rect)
+		r := img.Bounds()
+		draw.Draw(frame, r, img, r.Min, draw.Over)
+		imgs = append(imgs, frame)
+	}
+
 	return imgs
 }
 
