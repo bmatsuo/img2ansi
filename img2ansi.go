@@ -1,9 +1,15 @@
 /*
-	Command img2ansi renders images for a terminal using ANSI color codes.
+	Command img2ansi renders raster images for a terminal using ANSI color
+	codes.  Supported image types are JPEG, PNG, and GIF (which may be
+	animated).
 
 		img2ansi motd.png
 		img2ansi -animate -repeat=100 -width=78 https://i.imgur.com/872FDBm.gif
 		img2ansi -h
+
+	The command takes as arguments URLs referencing images to render.  If no
+	arguments are given img2ansi reads image data from standard input.  Image
+	URLs may be local files (simple paths or file:// urls) or HTTP(S) URLs.
 */
 package main
 
@@ -21,6 +27,8 @@ import (
 	"io"
 	"log"
 	"math"
+	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"runtime/pprof"
@@ -82,7 +90,7 @@ func main() {
 	} else {
 		for _, filename := range flag.Args() {
 			var fimgs []image.Image
-			fimgs, err = readFramesFile(filename)
+			fimgs, err = readFramesURL(filename)
 			imgs = append(imgs, fimgs...)
 		}
 	}
@@ -182,6 +190,49 @@ func writeANSIPixels(w io.Writer, img image.Image, p ANSIPalette, pad string) er
 		wbuf.Write(lineBytes)
 	}
 	return wbuf.Flush()
+}
+
+func readFramesURL(urlstr string) ([]image.Image, error) {
+	u, err := url.Parse(urlstr)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "" {
+		return readFramesFile(urlstr)
+	}
+	if u.Scheme == "file" {
+		return readFramesFile(u.Path)
+	}
+	if u.Scheme == "http" || u.Scheme == "https" {
+		return readFramesHTTP(urlstr)
+	}
+	return nil, fmt.Errorf("unrecognized url: %v", urlstr)
+}
+
+func readFramesHTTP(u string) ([]image.Image, error) {
+	resp, err := http.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("http: %v %v", resp.Status, u)
+	}
+	if resp.StatusCode >= 300 {
+		// TODO:
+		// Handle redirects better
+		return nil, fmt.Errorf("http: %v %v", resp.Status, u)
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("http: %v %v", resp.Status, u)
+	}
+	switch resp.Header.Get("Content-Type") {
+	case "application/octet-stream", "image/png", "image/gif", "image/jpeg":
+		return readFrames(resp.Body)
+	default:
+		return nil, fmt.Errorf("mime: %v %v", resp.Header.Get("Content-Type"), u)
+	}
 }
 
 func readFramesFile(filename string) ([]image.Image, error) {
