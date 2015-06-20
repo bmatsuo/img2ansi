@@ -55,7 +55,8 @@ func main() {
 	fopts := new(FrameOptions)
 
 	cpuprofile := flag.String("cpuprofile", "", "path of pprof CPU profile output")
-	scaleToTerm := flag.Bool("scale", false, "scale the image to fit the current terminal")
+	scaleToTerm := flag.Bool("scale", false, "scale to fit the current terminal (overrides -width and -height)")
+	height := flag.Int("height", 0, "desired height in terminal lines")
 	width := flag.Int("width", 0, "desired width in terminal columns")
 	paletteName := flag.String("color", "256", "color palette (8, 256, gray, ...)")
 	fontAspect := flag.Float64("fontaspect", 0.5, "aspect ratio (width/height)")
@@ -109,28 +110,21 @@ func main() {
 				log.Fatal(err)
 			}
 
-			// correct for wrap/overflow due to newlines/padding.
-			// BUG:
-			// scaled height is reduced because a newline follwing the final
-			// line does bad things for animation.
+			// correct for wrap/overflow due to newlines and padding.
 			w -= len(fopts.Pad)
 			h -= 1
 
-			if w > h {
-				log.Print(w, h)
-				size = sizeHeight(size, h, *fontAspect)
-				log.Print(size)
-			} else {
-				size = sizeWidth(size, w, *fontAspect)
-			}
-		} else if *width > 0 {
-			size = sizeWidth(size, *width, *fontAspect)
+			size = sizeRect(size, w, h, *fontAspect)
+		} else if *height > 0 || *width > 0 {
+			size = sizeRect(size, *width, *height, *fontAspect)
 		} else {
 			size = sizeNormal(size, *fontAspect)
 		}
-		if size != img.Bounds().Size() {
+
+		if size != img.Bounds().Size() { // it is super unlikely for this to happen
 			img = resize.Resize(uint(size.X), uint(size.Y), img, 0)
 		}
+
 		imgs[i] = img
 	}
 
@@ -342,24 +336,43 @@ func readImage(filename string) (image.Image, string, error) {
 	return img, format, nil
 }
 
-// sizeWidth returns a point with X equal to width and the same normalized
-// aspect ratio as size.
-func sizeWidth(size image.Point, width int, fontAspect float64) image.Point {
+// sizeRect returns a point with coords less than or equal to the corresponding
+// coordinates of size and having the same aspect ratio.  sizeRect always
+// returns the largest such coordinates.
+func sizeRect(size image.Point, width, height int, fontAspect float64) image.Point {
 	size = sizeNormal(size, fontAspect)
-	aspect := float64(size.X) / float64(size.Y)
-	size.X = width
-	size.Y = int(round(float64(width) / aspect))
-	return size
+	if width <= 0 {
+		return _sizeHeight(size, height)
+	}
+	if height <= 0 {
+		return _sizeWidth(size, width)
+	}
+	aspectSize := float64(size.X) / float64(size.Y)
+	aspectRect := float64(width) / float64(height)
+	if aspectSize > aspectRect {
+		// the image aspect ratio is wider than the given dimensions.  the
+		// image cannot fill the screen vertically.
+		return _sizeWidth(size, width)
+	}
+	return _sizeHeight(size, height)
 }
 
-// sizeHeight returns a point with Y equal to height and the same normalized
-// aspect ratio as size.
-func sizeHeight(size image.Point, height int, fontAspect float64) image.Point {
-	size = sizeNormal(size, fontAspect)
-	aspect := float64(size.X) / float64(size.Y)
-	size.Y = height
-	size.X = int(round(float64(height) * aspect))
-	return size
+// _sizeWidth returns a point with X equal to width and the same aspect ratio
+// as size.
+func _sizeWidth(sizeNorm image.Point, width int) image.Point {
+	aspect := float64(sizeNorm.X) / float64(sizeNorm.Y)
+	sizeNorm.X = width
+	sizeNorm.Y = int(round(float64(width) / aspect))
+	return sizeNorm
+}
+
+// _sizeHeight returns a point with Y equal to height and the same aspect ratio
+// as size.
+func _sizeHeight(sizeNorm image.Point, height int) image.Point {
+	aspect := float64(sizeNorm.X) / float64(sizeNorm.Y)
+	sizeNorm.Y = height
+	sizeNorm.X = int(round(float64(height) * aspect))
+	return sizeNorm
 }
 
 // sizeNormal scales size according to aspect ratio fontAspect and returns the
