@@ -32,6 +32,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
+	"time"
 
 	"github.com/nfnt/resize"
 )
@@ -54,6 +55,7 @@ func main() {
 	fopts := new(FrameOptions)
 
 	cpuprofile := flag.String("cpuprofile", "", "path of pprof CPU profile output")
+	scaleToTerm := flag.Bool("scale", false, "scale the image to fit the current terminal")
 	width := flag.Int("width", 0, "desired width in terminal columns")
 	paletteName := flag.String("color", "256", "color palette (8, 256, gray, ...)")
 	fontAspect := flag.Float64("fontaspect", 0.5, "aspect ratio (width/height)")
@@ -98,10 +100,30 @@ func main() {
 		log.Fatalf("image: %v", err)
 	}
 
-	// resize img to the proper width and aspect ratio
+	// resize the images to the proper size and aspect ratio
 	for i, img := range imgs {
 		size := img.Bounds().Size()
-		if *width > 0 {
+		if *scaleToTerm {
+			w, h, err := getTermDim()
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			// correct for wrap/overflow due to newlines/padding.
+			// BUG:
+			// scaled height is reduced because a newline follwing the final
+			// line does bad things for animation.
+			w -= len(fopts.Pad)
+			h -= 1
+
+			if w > h {
+				log.Print(w, h)
+				size = sizeHeight(size, h, *fontAspect)
+				log.Print(size)
+			} else {
+				size = sizeWidth(size, w, *fontAspect)
+			}
+		} else if *width > 0 {
 			size = sizeWidth(size, *width, *fontAspect)
 		} else {
 			size = sizeNormal(size, *fontAspect)
@@ -162,9 +184,6 @@ func writeANSIFramePixels(w io.Writer, imgs []image.Image, p ANSIPalette, opts *
 	return nil
 }
 
-var lineBytes = []byte{'\n'}
-var spaceBytes = []byte{' '}
-
 func writeANSIPixels(w io.Writer, img image.Image, p ANSIPalette, pad string) error {
 	wbuf := bufio.NewWriter(w)
 	writeansii := func() func(color string) {
@@ -183,11 +202,11 @@ func writeANSIPixels(w io.Writer, img image.Image, p ANSIPalette, pad string) er
 		for x := 0; x < size.X; x++ {
 			color := img.At(rect.Min.X+x, rect.Min.Y+y)
 			writeansii(p.ANSI(color))
-			wbuf.Write(spaceBytes)
+			wbuf.WriteString(" ")
 		}
 		wbuf.WriteString(pad)
 		writeansii(ANSIClear)
-		wbuf.Write(lineBytes)
+		wbuf.WriteString("\n")
 	}
 	return wbuf.Flush()
 }
@@ -210,7 +229,10 @@ func readFramesURL(urlstr string) ([]image.Image, error) {
 }
 
 func readFramesHTTP(u string) ([]image.Image, error) {
-	resp, err := http.Get(u)
+	client := http.Client{
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Get(u)
 	if err != nil {
 		return nil, err
 	}
@@ -327,6 +349,16 @@ func sizeWidth(size image.Point, width int, fontAspect float64) image.Point {
 	aspect := float64(size.X) / float64(size.Y)
 	size.X = width
 	size.Y = int(round(float64(width) / aspect))
+	return size
+}
+
+// sizeHeight returns a point with Y equal to height and the same normalized
+// aspect ratio as size.
+func sizeHeight(size image.Point, height int, fontAspect float64) image.Point {
+	size = sizeNormal(size, fontAspect)
+	aspect := float64(size.X) / float64(size.Y)
+	size.Y = height
+	size.X = int(round(float64(height) * aspect))
 	return size
 }
 
