@@ -62,7 +62,7 @@ func main() {
 	fontAspect := flag.Float64("fontaspect", 0.5, "aspect ratio (width/height)")
 	alphaThreshold := flag.Float64("alphamin", 1.0, "transparency threshold")
 	useStdin := flag.Bool("stdin", false, "read image data from stdin")
-	flag.StringVar(&fopts.Pad, "pad", " ", "pad output on the left with whitespace")
+	flag.StringVar(&fopts.Pad, "pad", " ", "specify text to pad output lines on the left")
 	flag.BoolVar(&fopts.Animate, "animate", false, "animate images")
 	flag.IntVar(&fopts.Repeat, "repeat", 0, "number of animated loops")
 	flag.Parse()
