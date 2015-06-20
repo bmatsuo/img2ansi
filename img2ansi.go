@@ -98,7 +98,7 @@ func main() {
 		}
 	}
 	if err != nil {
-		log.Fatalf("image: %v", err)
+		log.Fatal(err)
 	}
 
 	// resize the images to the proper size and aspect ratio
