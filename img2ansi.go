@@ -86,43 +86,36 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	var frames <-chan image.Image
+	var frames <-chan *Frame
 	var err error
-	decodeErrors := make(chan error, 1)
 	if *useStdin || flag.NArg() == 0 {
 		frames, err = decodeFrames(os.Stdin)
-		decodeErrors <- err
-		close(decodeErrors)
+		if err != nil {
+			log.Fatal(err)
+		}
 	} else {
-		_frames := make(chan image.Image)
+		// decode all the images given as arguments and concatenate their
+		// frames.
+		_frames := make(chan *Frame)
 		frames = _frames
-		concat := func() chan<- <-chan image.Image {
-			c := make(chan (<-chan image.Image))
-			go func() {
-				defer close(_frames)
-				for frames := range c {
-					for frame := range frames {
-						_frames <- frame
-					}
-				}
-			}()
-			return c
-		}()
-
-		go func(errc chan<- error, concat chan<- <-chan image.Image, filenames []string) {
-			defer close(errc)
-			defer close(concat)
-			for _, filename := range filenames {
-				fileFrames, err := decodeFramesURL(filename)
-				if err != nil {
-					errc <- err
-					return
-				}
-				concat <- fileFrames
+		var frameChans []<-chan *Frame
+		for _, filename := range flag.Args() {
+			frames, err := decodeFramesURL(filename)
+			if err != nil {
+				log.Fatal(err)
 			}
-		}(decodeErrors, concat, flag.Args())
+			frameChans = append(frameChans, frames)
+		}
+		go func() {
+			for _, frames := range frameChans {
+				for frame := range frames {
+					_frames <- frame
+				}
+			}
+		}()
 	}
 
+	// scale frame images to the desired size
 	if *scaleToTerm {
 		*width, *height, err = getTermDim()
 		if err != nil {
@@ -133,46 +126,89 @@ func main() {
 		*width -= len(fopts.Pad)
 		*height -= 1
 	}
+	scaledFrames := ResizeFrames(*width, *height, *fontAspect, frames)
 
-	scaledFrames := make(chan image.Image, 5)
-	go func(scaled chan<- image.Image, width, height int, fontAspect float64, frames <-chan image.Image) {
+	// delay images to avoid them having too high a framerate at small sizes.
+	ticker := time.NewTicker(time.Second / 100)
+	defer ticker.Stop()
+	delayedFrames := DelayFrames(scaledFrames, ticker.C, 30*time.Millisecond)
+
+	err = writeANSIFrames(os.Stdout, delayedFrames, palette, fopts)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+type Frame struct {
+	Image image.Image
+	Delay time.Duration
+}
+
+func DelayFrames(frames <-chan *Frame, tick <-chan time.Time, delayDefault time.Duration) <-chan *Frame {
+	delayed := make(chan *Frame)
+	go func() {
+		defer close(delayed)
+		var zeroTime time.Time // zeroTime is set on the first frame
+		var currTime time.Time // currTime is updated with tick
+		var currFrame *Frame
+		var currFrameTime time.Time
+		var ok bool
+		_frames := frames
+		var _delayed chan<- *Frame
+		for {
+			select {
+			case currTime = <-tick:
+				if _delayed == nil && currFrame != nil && currTime.Add(1).After(currFrameTime) {
+					_delayed = delayed
+				}
+			case currFrame, ok = <-_frames:
+				if !ok {
+					return
+				}
+				_frames = nil
+
+				if zeroTime.IsZero() {
+					zeroTime = time.Now()
+					currFrameTime = zeroTime
+				}
+				currFrameTime = currFrameTime.Add(currFrame.Delay)
+
+				if currTime.Add(1).After(currFrameTime) {
+					_delayed = delayed
+				}
+			case _delayed <- currFrame:
+				_delayed = nil
+				_frames = frames
+			}
+		}
+	}()
+	return delayed
+}
+
+func ResizeFrames(width, height int, fontAspect float64, frames <-chan *Frame) <-chan *Frame {
+	scaled := make(chan *Frame)
+	go func() {
 		defer close(scaled)
 		// resize the images to the proper size and aspect ratio
-		for img := range frames {
-			size := img.Bounds().Size()
-			size = sizeRect(size, width, height, fontAspect)
-			if size != img.Bounds().Size() { // it is super unlikely for this to happen
+		for f := range frames {
+			img := f.Image
+			sizeOrig := img.Bounds().Size()
+			size := sizeRect(sizeOrig, width, height, fontAspect)
+			if size != sizeOrig { // it is super unlikely for this to happen
 				img = resize.Resize(uint(size.X), uint(size.Y), img, 0)
 			}
-			scaled <- img
-		}
-	}(scaledFrames, *width, *height, *fontAspect, frames)
-
-	writeErrors := make(chan error, 1)
-	go func() {
-		defer close(writeErrors)
-		writeErrors <- writeANSIFrames(os.Stdout, scaledFrames, palette, fopts)
-	}()
-
-	select {
-	case err := <-decodeErrors:
-		if err == nil {
-			err = <-writeErrors
-		}
-		if err != nil {
-			log.Fatal(err)
-		}
-	case err := <-writeErrors:
-		if err == nil {
-			select {
-			case err = <-decodeErrors:
-			default:
+			scaled <- &Frame{
+				Image: img,
+				Delay: f.Delay,
 			}
 		}
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
+	}()
+	return scaled
+}
+
+type DecodeOptions struct {
+	DefaultDelay time.Duration
+	LoopCount    int
 }
 
 // FrameOptions describes how to render a sequence of frames in a terminal.
@@ -193,19 +229,19 @@ type FrameOptions struct {
 
 // writeANSIFrames encodes images received over frames as ANSI escape sequences
 // using p and writes them to w.  writeANSIFrames does not use opts.Repeat.
-func writeANSIFrames(w io.Writer, frames <-chan image.Image, p ANSIPalette, opts *FrameOptions) error {
+func writeANSIFrames(w io.Writer, frames <-chan *Frame, p ANSIPalette, opts *FrameOptions) error {
 	var rect image.Rectangle
 	animate := opts != nil && opts.Animate
 
-	for img := range frames {
+	for f := range frames {
 		if animate {
 			up := rect.Size().Y
-			rect = img.Bounds()
+			rect = f.Image.Bounds()
 			if up > 0 {
 				fmt.Fprintf(w, "\033[%dA", up)
 			}
 		}
-		err := writeANSIPixels(w, img, p, opts.Pad)
+		err := writeANSIPixels(w, f.Image, p, opts.Pad)
 		if err != nil {
 			return err
 		}
@@ -269,7 +305,7 @@ func writeANSIPixels(w io.Writer, img image.Image, p ANSIPalette, pad string) er
 	return wbuf.Flush()
 }
 
-func decodeFramesURL(urlstr string) (<-chan image.Image, error) {
+func decodeFramesURL(urlstr string) (<-chan *Frame, error) {
 	u, err := url.Parse(urlstr)
 	if err != nil {
 		return nil, err
@@ -303,7 +339,7 @@ func readFramesURL(urlstr string) ([]image.Image, error) {
 	return nil, fmt.Errorf("unrecognized url: %v", urlstr)
 }
 
-func decodeFramesHTTP(u string) (<-chan image.Image, error) {
+func decodeFramesHTTP(u string) (<-chan *Frame, error) {
 	client := http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -361,7 +397,7 @@ func readFramesHTTP(u string) ([]image.Image, error) {
 	}
 }
 
-func decodeFramesFile(filename string) (<-chan image.Image, error) {
+func decodeFramesFile(filename string) (<-chan *Frame, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -379,7 +415,7 @@ func readFramesFile(filename string) ([]image.Image, error) {
 	return readFrames(f)
 }
 
-func decodeFrames(r io.Reader) (<-chan image.Image, error) {
+func decodeFrames(r io.Reader) (<-chan *Frame, error) {
 	var confbuf bytes.Buffer
 	_, format, err := image.DecodeConfig(io.TeeReader(r, &confbuf))
 	if err != nil {
@@ -390,13 +426,15 @@ func decodeFrames(r io.Reader) (<-chan image.Image, error) {
 		return decodeFramesGIF(r)
 	}
 
-	c := make(chan image.Image, 1)
+	c := make(chan *Frame, 1)
 	defer close(c)
 	img, _, err := image.Decode(r)
 	if err != nil {
 		return nil, err
 	}
-	c <- img
+	c <- &Frame{
+		Image: img,
+	}
 	return c, nil
 }
 
@@ -417,36 +455,32 @@ func readFrames(r io.Reader) ([]image.Image, error) {
 	return []image.Image{img}, nil
 }
 
-func decodeFramesGIF(r io.Reader) (<-chan image.Image, error) {
+func decodeFramesGIF(r io.Reader) (<-chan *Frame, error) {
 	img, err := gif.DecodeAll(r)
 	if err != nil {
 		return nil, err
 	}
-	delay := func() <-chan time.Time {
-		c := make(chan time.Time)
-		close(c)
-		return c
-	}()
 
 	const timeUnit = time.Second / 100
-	c := make(chan image.Image, len(img.Image))
+	c := make(chan *Frame, len(img.Image))
 	go func() {
 		defer close(c)
-		log.Printf("loop count: %d", img.LoopCount)
-		log.Printf("delays: %v", img.Delay)
-		if img.LoopCount == 0 {
-			img.LoopCount = 10
+		numloop := img.LoopCount
+		if numloop == 0 {
+			numloop--
 		}
-		for i := 0; i <= img.LoopCount; i++ {
-			delays := img.Delay
-			framesGIF(img, func(img image.Image) {
-				<-delay
-				c <- img
-				head := delays[0]
-				delays = delays[1:]
-				// BUG:
-				// time.After will produce additive error over time
-				delay = time.After(time.Duration(head) * timeUnit)
+		log.Printf("loop count: %d", numloop)
+		log.Printf("delays: %v", img.Delay)
+		for n := 0; n != numloop; n++ {
+			framesGIF(img, func(i int, fimg image.Image) {
+				delay := img.Delay[i]
+				if i == 0 && n == 0 {
+					delay = 0
+				}
+				c <- &Frame{
+					Image: fimg,
+					Delay: time.Duration(delay) * timeUnit,
+				}
 			})
 		}
 	}()
@@ -459,12 +493,12 @@ func readFramesGIF(r io.Reader) ([]image.Image, error) {
 		return nil, err
 	}
 	var imgs []image.Image
-	framesGIF(img, func(img image.Image) { imgs = append(imgs, img) })
+	framesGIF(img, func(i int, img image.Image) { imgs = append(imgs, img) })
 	return imgs, nil
 }
 
 // framesGIF computes the raw frames of g by successively applying layers.
-func framesGIF(g *gif.GIF, fn func(img image.Image)) {
+func framesGIF(g *gif.GIF, fn func(i int, img image.Image)) {
 	if len(g.Image) == 0 {
 		return
 	}
@@ -488,11 +522,11 @@ func framesGIF(g *gif.GIF, fn func(img image.Image)) {
 	}
 
 	// draw each frame within the larger rectangle
-	for _, img := range g.Image {
+	for i, img := range g.Image {
 		frame := image.NewRGBA64(rect)
 		r := img.Bounds()
 		draw.Draw(frame, r, img, r.Min, draw.Over)
-		fn(frame)
+		fn(i, frame)
 	}
 }
 
