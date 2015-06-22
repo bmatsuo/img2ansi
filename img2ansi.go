@@ -20,8 +20,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/draw"
-	"image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
@@ -34,6 +32,7 @@ import (
 	"runtime/pprof"
 	"time"
 
+	"github.com/bmatsuo/img2ansi/gif"
 	"github.com/nfnt/resize"
 )
 
@@ -472,7 +471,7 @@ func decodeFramesGIF(r io.Reader) (<-chan *Frame, error) {
 		log.Printf("loop count: %d", numloop)
 		log.Printf("delays: %v", img.Delay)
 		for n := 0; n != numloop; n++ {
-			framesGIF(img, func(i int, fimg image.Image) {
+			for i, fimg := range img.Image {
 				delay := img.Delay[i]
 				if i == 0 && n == 0 {
 					delay = 0
@@ -481,7 +480,7 @@ func decodeFramesGIF(r io.Reader) (<-chan *Frame, error) {
 					Image: fimg,
 					Delay: time.Duration(delay) * timeUnit,
 				}
-			})
+			}
 		}
 	}()
 	return c, nil
@@ -493,41 +492,10 @@ func readFramesGIF(r io.Reader) ([]image.Image, error) {
 		return nil, err
 	}
 	var imgs []image.Image
-	framesGIF(img, func(i int, img image.Image) { imgs = append(imgs, img) })
+	for _, img := range img.Image {
+		imgs = append(imgs, img)
+	}
 	return imgs, nil
-}
-
-// framesGIF computes the raw frames of g by successively applying layers.
-func framesGIF(g *gif.GIF, fn func(i int, img image.Image)) {
-	if len(g.Image) == 0 {
-		return
-	}
-
-	// determine the overall dimensions of the image.
-	rect := g.Image[0].Rect
-	for _, layer := range g.Image {
-		r := layer.Bounds()
-		if r.Min.X < rect.Min.X {
-			rect.Min.X = r.Min.X
-		}
-		if r.Min.Y < rect.Min.Y {
-			rect.Min.Y = r.Min.Y
-		}
-		if r.Max.X > rect.Max.X {
-			rect.Max.X = r.Max.X
-		}
-		if r.Max.Y > rect.Max.Y {
-			rect.Max.Y = r.Max.Y
-		}
-	}
-
-	// draw each frame within the larger rectangle
-	for i, img := range g.Image {
-		frame := image.NewRGBA64(rect)
-		r := img.Bounds()
-		draw.Draw(frame, r, img, r.Min, draw.Over)
-		fn(i, frame)
-	}
 }
 
 // readImage reads an image.Image from a specified file.
