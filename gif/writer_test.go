@@ -68,9 +68,9 @@ var testCase = []struct {
 	filename  string
 	tolerance int64
 }{
-	{"../testdata/video-001.png", 1 << 12},
-	{"../testdata/video-001.gif", 0},
-	{"../testdata/video-001.interlaced.gif", 0},
+	{"./testdata/video-001.png", 1 << 12},
+	{"./testdata/video-001.gif", 0},
+	{"./testdata/video-001.interlaced.gif", 0},
 }
 
 func TestWriter(t *testing.T) {
@@ -105,7 +105,7 @@ func TestWriter(t *testing.T) {
 }
 
 func TestSubImage(t *testing.T) {
-	m0, err := readImg("../testdata/video-001.gif")
+	m0, err := readImg("./testdata/video-001.gif")
 	if err != nil {
 		t.Fatalf("readImg: %v", err)
 	}
@@ -155,8 +155,8 @@ func palettesEqual(p, q color.Palette) bool {
 }
 
 var frames = []string{
-	"../testdata/video-001.gif",
-	"../testdata/video-005.gray.gif",
+	"./testdata/video-001.gif",
+	"./testdata/video-005.gray.gif",
 }
 
 func testEncodeAll(t *testing.T, go1Dot5Fields bool, useGlobalColorModel bool) {

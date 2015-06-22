@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/gif"
+	"image/draw"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
@@ -32,6 +32,8 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"time"
+
+	"github.com/bmatsuo/img2ansi/gif"
 
 	"github.com/nfnt/resize"
 )
@@ -461,6 +463,9 @@ func decodeFramesGIF(r io.Reader, fopts *FrameOptions) (<-chan *Frame, error) {
 		return nil, err
 	}
 
+	renderer := newGIFRenderer(img, func(b image.Rectangle) draw.Image { return image.NewRGBA64(b) })
+	renderer.RenderFrames()
+
 	const timeUnit = time.Second / 100
 	c := make(chan *Frame, len(img.Image))
 	go func() {
@@ -474,7 +479,7 @@ func decodeFramesGIF(r io.Reader, fopts *FrameOptions) (<-chan *Frame, error) {
 		log.Printf("loop count: %d", numloop)
 		log.Printf("delays: %v", img.Delay)
 		for n := 0; n != numloop; n++ {
-			for i, fimg := range img.Image {
+			for i, fimg := range renderer.Frames {
 				delay := img.Delay[i]
 				if i == 0 && n == 0 {
 					delay = 0
