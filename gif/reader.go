@@ -40,6 +40,7 @@ const (
 	ifPixelSizeMask   = 7
 
 	// Graphic control flags.
+	gcDisposalMethod      = 7 << 2
 	gcTransparentColorSet = 1 << 0
 )
 
@@ -81,15 +82,20 @@ type decoder struct {
 	// From graphics control.
 	transparentIndex    byte
 	hasTransparentIndex bool
+	disposalMethod      disposalMethod
 
 	// Computed.
-	pixelSize      uint
-	globalColorMap color.Palette
+	pixelSize              uint
+	globalColorMap         color.Palette
+	globalTransparentIndex uint8
 
 	// Used when decoding.
-	delay []int
-	image []*image.Paletted
-	tmp   [1024]byte // must be at least 768 so we can read color map
+	dndHasTransparentIndex bool
+	dndTransparentIndex    uint8
+	doNotDispose           *image.Paletted
+	delay                  []int
+	image                  []*image.Paletted
+	tmp                    [1024]byte // must be at least 768 so we can read color map
 }
 
 // blockReader parses the block structure of GIF image data, which
@@ -155,6 +161,15 @@ func (d *decoder) decode(r io.Reader, configOnly bool) error {
 		}
 	}
 
+	// attempt to introduce transparency to the color map.  if the color map is
+	// full then the background color is used instead of transparency for the
+	// base layer.
+	d.globalTransparentIndex = d.backgroundIndex
+	if len(d.globalColorMap) < 256 {
+		d.globalTransparentIndex = uint8(len(d.globalColorMap))
+		d.globalColorMap = append(d.globalColorMap, color.RGBA{})
+	}
+
 	for {
 		c, err := d.r.ReadByte()
 		if err != nil {
@@ -179,13 +194,6 @@ func (d *decoder) decode(r io.Reader, configOnly bool) error {
 				}
 			} else {
 				m.Palette = d.globalColorMap
-			}
-			if d.hasTransparentIndex && int(d.transparentIndex) < len(m.Palette) {
-				if !useLocalColorMap {
-					// Clone the global color map.
-					m.Palette = append(color.Palette(nil), d.globalColorMap...)
-				}
-				m.Palette[d.transparentIndex] = color.RGBA{}
 			}
 			litWidth, err := d.r.ReadByte()
 			if err != nil {
@@ -233,13 +241,54 @@ func (d *decoder) decode(r io.Reader, configOnly bool) error {
 				uninterlace(m)
 			}
 
-			d.image = append(d.image, m)
+			frame := image.NewPaletted(image.Rect(0, 0, d.width, d.height), m.Palette)
+			if d.disposalMethod != disposalUnspecified {
+				for x := 0; x < d.width; x++ {
+					for y := 0; y < d.height; y++ {
+						frame.SetColorIndex(x, y, d.globalTransparentIndex)
+					}
+				}
+			}
+			if (d.disposalMethod == disposalNone || d.disposalMethod == disposalPrevious) && d.doNotDispose != nil {
+				for x := 0; x < d.width; x++ {
+					for y := 0; y < d.height; y++ {
+						color := d.backgroundIndex
+						if d.doNotDispose != nil {
+							// BUG:
+							// this is probably incorrect when local color maps are in use
+							color = d.doNotDispose.ColorIndexAt(x, y)
+						}
+						frame.SetColorIndex(x, y, color)
+					}
+				}
+			}
+
+			// draw the image over the virtual screen.  transparency is checked
+			// directly instead of blending because GIF89a has binary
+			// transparency (no alpha channel).
+			for x := m.Rect.Min.X; x < m.Rect.Max.X; x++ {
+				for y := m.Rect.Min.Y; y < m.Rect.Max.Y; y++ {
+					color := m.ColorIndexAt(x, y)
+					if d.hasTransparentIndex && d.transparentIndex == color {
+						continue
+					}
+					frame.SetColorIndex(x, y, color)
+				}
+			}
+
+			if d.disposalMethod == disposalNone {
+				d.doNotDispose = image.NewPaletted(frame.Rect, frame.Palette)
+				copy(d.doNotDispose.Pix, frame.Pix)
+			}
+
+			d.image = append(d.image, frame)
 			d.delay = append(d.delay, d.delayTime)
 			// The GIF89a spec, Section 23 (Graphic Control Extension) says:
 			// "The scope of this extension is the first graphic rendering block
 			// to follow." We therefore reset the GCE fields to zero.
 			d.delayTime = 0
 			d.hasTransparentIndex = false
+			d.disposalMethod = disposalUnspecified
 
 		case sTrailer:
 			if len(d.image) == 0 {
@@ -348,6 +397,7 @@ func (d *decoder) readGraphicControl() error {
 	}
 	d.flags = d.tmp[1]
 	d.delayTime = int(d.tmp[2]) | int(d.tmp[3])<<8
+	d.disposalMethod = disposalMethod((d.flags & gcDisposalMethod) >> 2)
 	if d.flags&gcTransparentColorSet != 0 {
 		d.transparentIndex = d.tmp[4]
 		d.hasTransparentIndex = true
@@ -430,6 +480,15 @@ type GIF struct {
 	Delay     []int             // The successive delay times, one per frame, in 100ths of a second.
 	LoopCount int               // The loop count.
 }
+
+type disposalMethod uint8
+
+const (
+	disposalUnspecified disposalMethod = iota
+	disposalNone
+	disposalBackground
+	disposalPrevious
+)
 
 // DecodeAll reads a GIF image from r and returns the sequential frames
 // and timing information.
