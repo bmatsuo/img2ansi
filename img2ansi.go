@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
@@ -32,7 +33,6 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"github.com/bmatsuo/img2ansi/gif"
 	"github.com/nfnt/resize"
 )
 
