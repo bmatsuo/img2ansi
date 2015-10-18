@@ -76,14 +76,15 @@ func main() {
 	var gotsignal *os.Signal
 	defer func() {
 		if gotsignal != nil {
+			io.WriteString(os.Stdout, ANSIClear)
 			log.Fatal(*gotsignal)
 		}
 	}()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	go func() {
-		signal.Stop(sig)
 		for s := range sig {
+			signal.Stop(sig)
 			s := s
 			gotsignal = &s
 			close(stop)
