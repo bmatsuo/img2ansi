@@ -499,13 +499,20 @@ func decodeFramesGIF(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-
 		return nil, err
 	}
 
-	renderer := newGIFRenderer(img, func(b image.Rectangle) draw.Image { return image.NewRGBA64(b) })
-	renderer.RenderFrames()
-
 	const timeUnit = time.Second / 100
 	c := make(chan *Frame, len(img.Image))
 	go func() {
 		defer close(c)
+
+		renderer := newGIFRenderer(img, func(b image.Rectangle) draw.Image { return image.NewRGBA64(b) })
+		for renderer.RenderNext() {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+		}
+
 		numloop := img.LoopCount
 		if fopts.Repeat >= 0 {
 			numloop = fopts.Repeat + 1
