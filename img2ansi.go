@@ -66,7 +66,8 @@ func main() {
 	useStdin := flag.Bool("stdin", false, "read image data from stdin")
 	flag.StringVar(&fopts.Pad, "pad", " ", "specify text to pad output lines on the left")
 	flag.BoolVar(&fopts.Animate, "animate", false, "animate images")
-	flag.IntVar(&fopts.Repeat, "repeat", 0, "number of animated loops")
+	flag.IntVar(&fopts.Repeat, "repeat", -1, "number of animated loops")
+	flag.IntVar(&fopts.Delay, "delay", 200, "for animate, delay in milliseconds before the next frame")
 	flag.Parse()
 	if *useStdin && flag.NArg() > 0 {
 		log.Fatal("no arguments are expected when -stdin provided")
@@ -245,6 +246,9 @@ type DecodeOptions struct {
 
 // FrameOptions describes how to render a sequence of frames in a terminal.
 type FrameOptions struct {
+	// Delay is the time to wait between animating frames.
+	Delay int
+
 	// Pad is a string prepended to each row of pixels.
 	Pad string
 
@@ -279,6 +283,7 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 				if up > 0 {
 					fmt.Fprintf(w, "\033[%dA", up)
 				}
+				time.Sleep(time.Duration(opts.Delay) * time.Millisecond)
 			}
 			err := writeANSIPixels(w, f.Image, p, opts.Pad)
 			if err != nil {
