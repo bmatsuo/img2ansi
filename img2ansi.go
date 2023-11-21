@@ -14,7 +14,6 @@ URLs may be local files (simple paths or file:// urls) or HTTP(S) URLs.
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -274,8 +273,22 @@ type FrameOptions struct {
 // writeANSIFrames encodes images received over frames as ANSI escape sequences
 // using p and writes them to w.  writeANSIFrames does not use opts.Repeat.
 func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p ANSIPalette, opts *FrameOptions) error {
-	var rect image.Rectangle
+	lastRect := image.Rectangle{}
 	animate := opts != nil && opts.Animate
+
+	// The frame buffer is filled completely before flushing to have the most
+	// accurate and consistent fps.
+	buf := newFrameBuffer(w)
+
+	// frameGate receives a value when a frame is ready to be drawn. The value
+	// received should not be interpreted
+	frameGate := func() <-chan time.Time {
+		c := make(chan time.Time)
+		close(c)
+		return c
+	}()
+
+	// frame counter and timing
 	nframe := 0
 	start := time.Now()
 	defer func() {
@@ -295,12 +308,9 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 			if !ok {
 				return nil
 			}
+
 			if animate {
-				up := rect.Size().Y
-				rect = f.Image.Bounds()
-				if up > 0 {
-					fmt.Fprintf(w, "\033[%dA", up)
-				}
+				// Delay this animation frame before rendering by setting frameGate
 				if nframe > 0 {
 					delay := time.Duration(opts.Delay) * time.Millisecond
 					if delay == 0 {
@@ -309,10 +319,25 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 					if delay == 0 {
 						delay = DelayDefault
 					}
-					time.Sleep(delay)
+					frameGate = time.After(delay)
+				}
+
+				// Reset the cursor to the top of the image
+				up := lastRect.Size().Y
+				lastRect = f.Image.Bounds()
+				if up > 0 {
+					fmt.Fprintf(buf, "\033[%dA", up)
 				}
 			}
-			err := writeANSIPixels(w, f.Image, p, opts.Pad)
+
+			err := writeANSIPixels(buf, f.Image, p, opts.Pad)
+			if err != nil {
+				return err
+			}
+
+			<-frameGate
+
+			err = buf.Flush()
 			if err != nil {
 				return err
 			}
@@ -321,31 +346,30 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 	}
 }
 
-func writeANSIPixels(w io.Writer, img image.Image, p ANSIPalette, pad string) error {
-	wbuf := bufio.NewWriter(w)
+func writeANSIPixels(w *frameBuffer, img image.Image, p ANSIPalette, pad string) error {
 	writeansii := func() func(color string) {
 		var lastcolor string
 		return func(color string) {
 			if color != lastcolor {
 				lastcolor = color
-				wbuf.WriteString(color)
+				w.WriteString(color)
 			}
 		}
 	}()
 	rect := img.Bounds()
 	size := rect.Size()
 	for y := 0; y < size.Y; y++ {
-		wbuf.WriteString(pad)
+		w.WriteString(pad)
 		for x := 0; x < size.X; x++ {
 			color := img.At(rect.Min.X+x, rect.Min.Y+y)
 			writeansii(p.ANSI(color))
-			wbuf.WriteString(" ")
+			w.WriteString(" ")
 		}
-		wbuf.WriteString(pad)
+		w.WriteString(pad)
 		writeansii(ANSIClear)
-		wbuf.WriteString("\n")
+		w.WriteString("\n")
 	}
-	return wbuf.Flush()
+	return nil
 }
 
 func decodeFramesURL(urlstr string, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
