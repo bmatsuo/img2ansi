@@ -277,6 +277,15 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 	var rect image.Rectangle
 	animate := opts != nil && opts.Animate
 	nframe := 0
+	start := time.Now()
+	defer func() {
+		if Debug {
+			dur := time.Since(start)
+			secs := float64(dur) / float64(time.Second)
+			fps := float64(nframe) / secs
+			log.Printf("fps: %.2f", fps)
+		}
+	}()
 
 	for {
 		select {
@@ -310,34 +319,6 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 		}
 		nframe++
 	}
-}
-
-func writeANSIFramePixels(w io.Writer, imgs []image.Image, p ANSIPalette, opts *FrameOptions) error {
-	var rect image.Rectangle
-	animate := opts != nil && opts.Animate
-
-	loopn := 1
-	if opts != nil {
-		loopn += opts.Repeat
-	}
-
-	for loop := 0; loopn <= 0 || loop < loopn; loop++ {
-		for _, img := range imgs {
-			if animate {
-				up := rect.Size().Y
-				rect = img.Bounds()
-				if up > 0 {
-					fmt.Fprintf(w, "\033[%dA", up)
-				}
-			}
-			err := writeANSIPixels(w, img, p, opts.Pad)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
 }
 
 func writeANSIPixels(w io.Writer, img image.Image, p ANSIPalette, pad string) error {
