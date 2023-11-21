@@ -1,15 +1,15 @@
 /*
-	Command img2ansi renders raster images for a terminal using ANSI color
-	codes.  Supported image types are JPEG, PNG, and GIF (which may be
-	animated).
+Command img2ansi renders raster images for a terminal using ANSI color
+codes.  Supported image types are JPEG, PNG, and GIF (which may be
+animated).
 
-		img2ansi motd.png
-		img2ansi -animate -repeat=5 -scale https://i.imgur.com/872FDBm.gif
-		img2ansi -h
+	img2ansi motd.png
+	img2ansi -animate -repeat=5 -scale https://i.imgur.com/872FDBm.gif
+	img2ansi -h
 
-	The command takes as arguments URLs referencing images to render.  If no
-	arguments are given img2ansi reads image data from standard input.  Image
-	URLs may be local files (simple paths or file:// urls) or HTTP(S) URLs.
+The command takes as arguments URLs referencing images to render.  If no
+arguments are given img2ansi reads image data from standard input.  Image
+URLs may be local files (simple paths or file:// urls) or HTTP(S) URLs.
 */
 package main
 
@@ -40,7 +40,9 @@ import (
 )
 
 const ANSIClear = "\033[0m"
+const DelayDefault = 33 * time.Millisecond
 
+var HTTPUserAgent = ""
 var AlphaThreshold = uint32(0xffff)
 
 func IsTransparent(c color.Color, threshold uint32) bool {
@@ -64,10 +66,11 @@ func main() {
 	fontAspect := flag.Float64("fontaspect", 0.5, "aspect ratio (width/height)")
 	alphaThreshold := flag.Float64("alphamin", 1.0, "transparency threshold")
 	useStdin := flag.Bool("stdin", false, "read image data from stdin")
+	flag.StringVar(&HTTPUserAgent, "useragent", "", "user-agent header override for images fetched over http")
 	flag.StringVar(&fopts.Pad, "pad", " ", "specify text to pad output lines on the left")
 	flag.BoolVar(&fopts.Animate, "animate", false, "animate images")
 	flag.IntVar(&fopts.Repeat, "repeat", -1, "number of animated loops")
-	flag.IntVar(&fopts.Delay, "delay", 200, "for animate, delay in milliseconds before the next frame")
+	flag.IntVar(&fopts.Delay, "delay", 0, "for -animate, force delay in milliseconds before the next frame")
 	flag.Parse()
 	if *useStdin && flag.NArg() > 0 {
 		log.Fatal("no arguments are expected when -stdin provided")
@@ -283,7 +286,14 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 				if up > 0 {
 					fmt.Fprintf(w, "\033[%dA", up)
 				}
-				time.Sleep(time.Duration(opts.Delay) * time.Millisecond)
+				delay := time.Duration(opts.Delay) * time.Millisecond
+				if delay == 0 {
+					delay = f.Delay
+				}
+				if delay == 0 {
+					delay = DelayDefault
+				}
+				time.Sleep(delay)
 			}
 			err := writeANSIPixels(w, f.Image, p, opts.Pad)
 			if err != nil {
@@ -386,13 +396,22 @@ func decodeFramesHTTP(u string, stop <-chan struct{}, fopts *FrameOptions) (<-ch
 	client := http.Client{
 		Timeout: 10 * time.Second,
 	}
-	resp, err := client.Get(u)
+	req, err := http.NewRequest("GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	if HTTPUserAgent != "" {
+		req.Header.Set("User-Agent", HTTPUserAgent)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
+		resp.Body = nil
+		resp.Write(os.Stderr)
 		return nil, fmt.Errorf("http: %v %v", resp.Status, u)
 	}
 	if resp.StatusCode >= 300 {
@@ -578,7 +597,7 @@ func readImage(filename string) (image.Image, string, error) {
 // always returns the largest such coordinates.  In particular this means the
 // following expression evaluates true
 //
-//		sizeRect(size, 0, 0, fontAspect) == sizeNormal(size, fontAspect)
+//	sizeRect(size, 0, 0, fontAspect) == sizeNormal(size, fontAspect)
 func sizeRect(size image.Point, width, height int, fontAspect float64) image.Point {
 	size = sizeNormal(size, fontAspect)
 	if width <= 0 && height <= 0 {
