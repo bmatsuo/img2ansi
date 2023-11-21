@@ -6,12 +6,16 @@ import (
 )
 
 type frameBuffer struct {
-	w io.Writer
 	b []byte
 }
 
-func newFrameBuffer(w io.Writer) *frameBuffer {
-	return &frameBuffer{w: w}
+func nbuffer(n int) []*frameBuffer {
+	p := make([]frameBuffer, n)
+	b := make([]*frameBuffer, n)
+	for i := range p {
+		b[i] = &p[i]
+	}
+	return b
 }
 
 func (b *frameBuffer) Write(p []byte) (int, error) {
@@ -28,8 +32,8 @@ func (b *frameBuffer) WriteString(s string) (int, error) {
 	return len(s), nil
 }
 
-func (b *frameBuffer) Flush() error {
-	_, err := io.Copy(b.w, bytes.NewReader(b.b))
+func (b *frameBuffer) FlushTo(w io.Writer) error {
+	_, err := io.Copy(w, bytes.NewReader(b.b))
 	if err != nil {
 		return err
 	}

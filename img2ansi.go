@@ -159,7 +159,9 @@ func main() {
 
 	loopedFrames := LoopFrames(scaledFrames, stop, fopts)
 
-	err = writeANSIFrames(os.Stdout, loopedFrames, stop, palette, fopts)
+	ansiFrames := writeANSIFrames(loopedFrames, palette, fopts, stop)
+
+	err = drawANSIFrames(os.Stdout, ansiFrames, stop, fopts)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -167,6 +169,12 @@ func main() {
 
 type Frame struct {
 	Image     image.Image
+	Delay     time.Duration
+	LoopCount int
+}
+
+type ANSIFrame struct {
+	Buffer    *frameBuffer
 	Delay     time.Duration
 	LoopCount int
 }
@@ -272,15 +280,63 @@ type FrameOptions struct {
 	Repeat int
 }
 
-// writeANSIFrames encodes images received over frames as ANSI escape sequences
-// using p and writes them to w.  writeANSIFrames does not use opts.Repeat.
-func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p ANSIPalette, opts *FrameOptions) error {
-	lastRect := image.Rectangle{}
-	animate := opts != nil && opts.Animate
+func writeANSIFrames(frames <-chan *Frame, p ANSIPalette, opts *FrameOptions, stop <-chan struct{}) <-chan *ANSIFrame {
+	draw := make(chan *ANSIFrame)
 
-	// The frame buffer is filled completely before flushing to have the most
-	// accurate and consistent fps.
-	buf := newFrameBuffer(w)
+	go func() {
+		defer close(draw)
+
+		// Keep two buffers so one can be filled while the other is being drawn.
+		buffers := nbuffer(2)
+		nframe := 0
+		lastRect := image.Rectangle{}
+		animate := opts != nil && opts.Animate
+
+		for {
+			select {
+			case <-stop:
+				return
+			case f, ok := <-frames:
+				if !ok {
+					return
+				}
+
+				buf := buffers[nframe%2]
+
+				if animate {
+					// Reset the cursor to the top of the image
+					up := lastRect.Size().Y
+					lastRect = f.Image.Bounds()
+					if up > 0 {
+						fmt.Fprintf(buf, "\033[%dA", up)
+					}
+				}
+
+				writeANSIPixels(buf, f.Image, p, opts.Pad)
+
+				b := &ANSIFrame{
+					Buffer:    buf,
+					Delay:     f.Delay,
+					LoopCount: f.LoopCount,
+				}
+
+				select {
+				case <-stop:
+					return
+				case draw <- b:
+				}
+
+				nframe++
+			}
+		}
+	}()
+	return draw
+}
+
+// drawANSIFrames encodes images received over frames as ANSI escape sequences
+// using p and writes them to w.  drawANSIFrames does not use opts.Repeat.
+func drawANSIFrames(w io.Writer, frames <-chan *ANSIFrame, stop <-chan struct{}, opts *FrameOptions) error {
+	animate := opts != nil && opts.Animate
 
 	// frameGate receives a value when a frame is ready to be drawn. The value
 	// received should not be interpreted
@@ -301,6 +357,8 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 			log.Printf("fps: %.2f", fps)
 		}
 	}()
+	frameStart := time.Time{}
+	_ = frameStart
 
 	for {
 		select {
@@ -311,35 +369,23 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 				return nil
 			}
 
-			if animate {
-				// Delay this animation frame before rendering by setting frameGate
-				if nframe > 0 {
-					delay := time.Duration(opts.Delay) * time.Millisecond
-					if delay == 0 {
-						delay = f.Delay
-					}
-					if delay == 0 {
-						delay = DelayDefault
-					}
-					frameGate = time.After(delay)
+			// Delay this animation frame before rendering by setting frameGate
+			if animate && nframe > 0 {
+				delay := time.Duration(opts.Delay) * time.Millisecond
+				if delay == 0 {
+					delay = f.Delay
 				}
-
-				// Reset the cursor to the top of the image
-				up := lastRect.Size().Y
-				lastRect = f.Image.Bounds()
-				if up > 0 {
-					fmt.Fprintf(buf, "\033[%dA", up)
+				if delay == 0 {
+					delay = DelayDefault
 				}
-			}
-
-			err := writeANSIPixels(buf, f.Image, p, opts.Pad)
-			if err != nil {
-				return err
+				delay -= time.Since(frameStart)
+				frameGate = time.After(delay)
 			}
 
 			<-frameGate
+			frameStart = time.Now()
 
-			err = buf.Flush()
+			err := f.Buffer.FlushTo(w)
 			if err != nil {
 				return err
 			}
@@ -348,7 +394,7 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 	}
 }
 
-func writeANSIPixels(w *frameBuffer, img image.Image, p ANSIPalette, pad string) error {
+func writeANSIPixels(w *frameBuffer, img image.Image, p ANSIPalette, pad string) {
 	writeansii := func() func(color string) {
 		var lastcolor string
 		return func(color string) {
@@ -371,7 +417,6 @@ func writeANSIPixels(w *frameBuffer, img image.Image, p ANSIPalette, pad string)
 		writeansii(ANSIClear)
 		w.WriteString("\n")
 	}
-	return nil
 }
 
 func decodeFramesURL(urlstr string, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
