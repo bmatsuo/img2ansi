@@ -158,63 +158,66 @@ func main() {
 	}
 	scaledFrames := ResizeFrames(*width, *height, *fontAspect, frames, stop)
 
-	// delay images to avoid them having too high a framerate at small sizes.
-	ticker := time.NewTicker(time.Second / 100)
-	defer ticker.Stop()
-	delayedFrames := DelayFrames(scaledFrames, stop, ticker.C, 30*time.Millisecond)
+	loopedFrames := LoopFrames(scaledFrames, stop, fopts)
 
-	err = writeANSIFrames(os.Stdout, delayedFrames, stop, palette, fopts)
+	err = writeANSIFrames(os.Stdout, loopedFrames, stop, palette, fopts)
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
 type Frame struct {
-	Image image.Image
-	Delay time.Duration
+	Image     image.Image
+	Delay     time.Duration
+	LoopCount int
 }
 
-func DelayFrames(frames <-chan *Frame, stop <-chan struct{}, tick <-chan time.Time, delayDefault time.Duration) <-chan *Frame {
-	delayed := make(chan *Frame)
+func LoopFrames(frames <-chan *Frame, stop <-chan struct{}, fopts *FrameOptions) <-chan *Frame {
+	var allFrames []*Frame
+	looped := make(chan *Frame)
 	go func() {
-		defer close(delayed)
-		var zeroTime time.Time // zeroTime is set on the first frame
-		var currTime time.Time // currTime is updated with tick
-		var currFrame *Frame
-		var currFrameTime time.Time
-		var ok bool
-		_frames := frames
-		var _delayed chan<- *Frame
+		defer close(looped)
+
+	collectFrames:
 		for {
 			select {
-			case currFrame, ok = <-_frames:
-				if !ok {
-					return
-				}
-				_frames = nil
-
-				if zeroTime.IsZero() {
-					zeroTime = time.Now()
-					currFrameTime = zeroTime
-				}
-				currFrameTime = currFrameTime.Add(currFrame.Delay)
-
-				if currTime.Add(1).After(currFrameTime) {
-					_delayed = delayed
-				}
-			case currTime = <-tick:
-				if _delayed == nil && currFrame != nil && currTime.Add(1).After(currFrameTime) {
-					_delayed = delayed
-				}
-			case _delayed <- currFrame:
-				_delayed = nil
-				_frames = frames
 			case <-stop:
 				return
+			case f, ok := <-frames:
+				if !ok {
+					break collectFrames
+				}
+				allFrames = append(allFrames, f)
+				select {
+				case <-stop:
+					return
+				case looped <- f:
+				}
+			}
+		}
+
+		if len(allFrames) == 0 {
+			return
+		}
+
+		numloop := allFrames[0].LoopCount
+		if fopts.Repeat >= 0 {
+			numloop = fopts.Repeat
+		} else if fopts.Repeat < 0 {
+			numloop = -1
+		}
+
+		for n := 0; n != numloop; n++ {
+			for _, f := range allFrames {
+				select {
+				case <-stop:
+					return
+				case looped <- f:
+				}
 			}
 		}
 	}()
-	return delayed
+	return looped
 }
 
 func ResizeFrames(width, height int, fontAspect float64, frames <-chan *Frame, stop <-chan struct{}) <-chan *Frame {
@@ -465,44 +468,31 @@ func decodeFramesGIF(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-
 		return nil, err
 	}
 
+	renderer := newGIFRenderer(img, func(b image.Rectangle) draw.Image { return image.NewRGBA64(b) })
+	for renderer.RenderNext() {
+		select {
+		case <-stop:
+			return nil, fmt.Errorf("gif rendering interrupted")
+		default:
+		}
+	}
+
 	const timeUnit = time.Second / 100
 	c := make(chan *Frame, len(img.Image))
 	go func() {
 		defer close(c)
 
-		renderer := newGIFRenderer(img, func(b image.Rectangle) draw.Image { return image.NewRGBA64(b) })
-		for renderer.RenderNext() {
+		for i, fimg := range renderer.Frames {
+			f := &Frame{
+				Image:     fimg,
+				Delay:     time.Duration(img.Delay[i]) * timeUnit,
+				LoopCount: img.LoopCount,
+			}
+
 			select {
 			case <-stop:
 				return
-			default:
-			}
-		}
-
-		numloop := img.LoopCount
-		if fopts.Repeat >= 0 {
-			numloop = fopts.Repeat + 1
-		} else if fopts.Repeat < 0 {
-			numloop = -1
-		}
-		if Debug {
-			log.Printf("loop count: %d", numloop)
-			log.Printf("delays: %v", img.Delay)
-		}
-		for n := 0; n != numloop; n++ {
-			for i, fimg := range renderer.Frames {
-				delay := img.Delay[i]
-				if i == 0 && n == 0 {
-					delay = 0
-				}
-				select {
-				case <-stop:
-					return
-				case c <- &Frame{
-					Image: fimg,
-					Delay: time.Duration(delay) * timeUnit,
-				}:
-				}
+			case c <- f:
 			}
 		}
 	}()
