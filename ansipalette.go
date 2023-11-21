@@ -94,17 +94,71 @@ type Palette256 struct {
 }
 
 func (p *Palette256) ANSI(c color.Color) string {
-	const begin = 16
-	const ratio = 5.0 / (1<<16 - 1)
-	rf, gf, bf, af := c.RGBA()
-	if af < AlphaThreshold {
+	val, opaque := colorFindRGB(c)
+	if !opaque {
 		return ANSIClear
 	}
-	r := int(round(ratio * float64(rf)))
-	g := int(round(ratio * float64(gf)))
-	b := int(round(ratio * float64(bf)))
-	val := r*6*6 + g*6 + b + begin
 	return "\033[48;5;" + strconv.Itoa(val) + "m"
+}
+
+var q2c = [6]int{0x00, 0x5f, 0x87, 0xaf, 0xd7, 0xff}
+
+// colorFindRGB is ported from tmux's color matching function
+//
+//	https://github.com/tmux/tmux/blob/dae2868d1227b95fd076fb4a5efa6256c7245943/colour.c#L57
+func colorFindRGB(c color.Color) (int, bool) {
+	r, g, b, a := c.RGBA()
+
+	if a < AlphaThreshold {
+		return 0, false
+	}
+
+	r, g, b = colorScale256(r), colorScale256(g), colorScale256(b)
+
+	qr := colorTo6Cube(r)
+	cr := q2c[qr]
+
+	qg := colorTo6Cube(g)
+	cg := q2c[qg]
+
+	qb := colorTo6Cube(b)
+	cb := q2c[qb]
+
+	if uint32(cr) == r && uint32(cg) == g && uint32(cb) == b {
+		return (16 + int(36*qr) + int(6*qg) + int(qb)), true
+	}
+
+	greyAvg := int(r+g+b) / 3
+	greyIdx := 23
+	if greyAvg <= 238 {
+		greyIdx = (greyAvg - 3) / 10
+	}
+	grey := 8 + (10 * greyIdx)
+
+	cDist := colorDistSq(cr, cg, cb, int(r), int(g), int(b))
+	if colorDistSq(grey, grey, grey, int(r), int(g), int(b)) < cDist {
+		return (232 + greyIdx), true
+	}
+
+	return (16 + int(36*qr) + int(6*qg) + int(qb)), true
+}
+
+func colorScale256(v uint32) uint32 {
+	return v * 256 / (1<<16 - 1)
+}
+
+func colorTo6Cube(v uint32) uint32 {
+	if v < 48 {
+		return 0
+	}
+	if v < 114 {
+		return 1
+	}
+	return ((v - 35) / 40)
+}
+
+func colorDistSq(r1, g1, b1, r2, g2, b2 int) int {
+	return (r1-r2)*(r1-r2) + (g1-g2)*(g1-g2) + (b1-b2)*(b1-b2)
 }
 
 type Palette256Precise struct{}
