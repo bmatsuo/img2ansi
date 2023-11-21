@@ -35,13 +35,13 @@ import (
 	"time"
 
 	"github.com/bmatsuo/img2ansi/gif"
-
 	"github.com/nfnt/resize"
 )
 
 const ANSIClear = "\033[0m"
 const DelayDefault = 33 * time.Millisecond
 
+var Debug = false
 var HTTPUserAgent = ""
 var AlphaThreshold = uint32(0xffff)
 
@@ -71,6 +71,7 @@ func main() {
 	flag.BoolVar(&fopts.Animate, "animate", false, "animate images")
 	flag.IntVar(&fopts.Repeat, "repeat", -1, "number of animated loops")
 	flag.IntVar(&fopts.Delay, "delay", 0, "for -animate, force delay in milliseconds before the next frame")
+	flag.BoolVar(&Debug, "debug", false, "print debug information")
 	flag.Parse()
 	if *useStdin && flag.NArg() > 0 {
 		log.Fatal("no arguments are expected when -stdin provided")
@@ -147,9 +148,13 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		if Debug {
+			log.Printf("terminal dimensions: %d x %d", *width, *height)
+		}
 
 		// correct for wrap/overflow due to newlines and padding.
 		*width -= len(fopts.Pad)
+		*width -= 1
 		*height -= 1
 	}
 	scaledFrames := ResizeFrames(*width, *height, *fontAspect, frames, stop)
@@ -271,6 +276,7 @@ type FrameOptions struct {
 func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p ANSIPalette, opts *FrameOptions) error {
 	var rect image.Rectangle
 	animate := opts != nil && opts.Animate
+	nframe := 0
 
 	for {
 		select {
@@ -286,20 +292,23 @@ func writeANSIFrames(w io.Writer, frames <-chan *Frame, stop <-chan struct{}, p 
 				if up > 0 {
 					fmt.Fprintf(w, "\033[%dA", up)
 				}
-				delay := time.Duration(opts.Delay) * time.Millisecond
-				if delay == 0 {
-					delay = f.Delay
+				if nframe > 0 {
+					delay := time.Duration(opts.Delay) * time.Millisecond
+					if delay == 0 {
+						delay = f.Delay
+					}
+					if delay == 0 {
+						delay = DelayDefault
+					}
+					time.Sleep(delay)
 				}
-				if delay == 0 {
-					delay = DelayDefault
-				}
-				time.Sleep(delay)
 			}
 			err := writeANSIPixels(w, f.Image, p, opts.Pad)
 			if err != nil {
 				return err
 			}
 		}
+		nframe++
 	}
 }
 
@@ -375,23 +384,6 @@ func decodeFramesURL(urlstr string, stop <-chan struct{}, fopts *FrameOptions) (
 	return nil, fmt.Errorf("unrecognized url: %v", urlstr)
 }
 
-func readFramesURL(urlstr string, stop <-chan struct{}, fopts *FrameOptions) ([]image.Image, error) {
-	u, err := url.Parse(urlstr)
-	if err != nil {
-		return nil, err
-	}
-	if u.Scheme == "" {
-		return readFramesFile(urlstr, stop, fopts)
-	}
-	if u.Scheme == "file" {
-		return readFramesFile(u.Path, stop, fopts)
-	}
-	if u.Scheme == "http" || u.Scheme == "https" {
-		return readFramesHTTP(urlstr, stop, fopts)
-	}
-	return nil, fmt.Errorf("unrecognized url: %v", urlstr)
-}
-
 func decodeFramesHTTP(u string, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
 	client := http.Client{
 		Timeout: 10 * time.Second,
@@ -430,35 +422,6 @@ func decodeFramesHTTP(u string, stop <-chan struct{}, fopts *FrameOptions) (<-ch
 	}
 }
 
-func readFramesHTTP(u string, stop <-chan struct{}, fopts *FrameOptions) ([]image.Image, error) {
-	client := http.Client{
-		Timeout: 10 * time.Second,
-	}
-	resp, err := client.Get(u)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("http: %v %v", resp.Status, u)
-	}
-	if resp.StatusCode >= 300 {
-		// TODO:
-		// Handle redirects better
-		return nil, fmt.Errorf("http: %v %v", resp.Status, u)
-	}
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("http: %v %v", resp.Status, u)
-	}
-	switch resp.Header.Get("Content-Type") {
-	case "application/octet-stream", "image/png", "image/gif", "image/jpeg":
-		return readFrames(resp.Body, stop, fopts)
-	default:
-		return nil, fmt.Errorf("mime: %v %v", resp.Header.Get("Content-Type"), u)
-	}
-}
-
 func decodeFramesFile(filename string, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
 	f, err := os.Open(filename)
 	if err != nil {
@@ -466,15 +429,6 @@ func decodeFramesFile(filename string, stop <-chan struct{}, fopts *FrameOptions
 	}
 	defer f.Close()
 	return decodeFrames(f, stop, fopts)
-}
-
-func readFramesFile(filename string, stop <-chan struct{}, fopts *FrameOptions) ([]image.Image, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return readFrames(f, stop, fopts)
 }
 
 func decodeFrames(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
@@ -498,23 +452,6 @@ func decodeFrames(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-cha
 		Image: img,
 	}
 	return c, nil
-}
-
-func readFrames(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) ([]image.Image, error) {
-	var confbuf bytes.Buffer
-	_, format, err := image.DecodeConfig(io.TeeReader(r, &confbuf))
-	if err != nil {
-		return nil, err
-	}
-	r = io.MultiReader(&confbuf, r)
-	if format == "gif" {
-		return readFramesGIF(r, stop, fopts)
-	}
-	img, _, err := image.Decode(r)
-	if err != nil {
-		return nil, err
-	}
-	return []image.Image{img}, nil
 }
 
 func decodeFramesGIF(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
@@ -543,8 +480,10 @@ func decodeFramesGIF(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-
 		} else if fopts.Repeat < 0 {
 			numloop = -1
 		}
-		log.Printf("loop count: %d", numloop)
-		log.Printf("delays: %v", img.Delay)
+		if Debug {
+			log.Printf("loop count: %d", numloop)
+			log.Printf("delays: %v", img.Delay)
+		}
 		for n := 0; n != numloop; n++ {
 			for i, fimg := range renderer.Frames {
 				delay := img.Delay[i]
@@ -563,18 +502,6 @@ func decodeFramesGIF(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-
 		}
 	}()
 	return c, nil
-}
-
-func readFramesGIF(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) ([]image.Image, error) {
-	img, err := gif.DecodeAll(r)
-	if err != nil {
-		return nil, err
-	}
-	var imgs []image.Image
-	for _, img := range img.Image {
-		imgs = append(imgs, img)
-	}
-	return imgs, nil
 }
 
 // readImage reads an image.Image from a specified file.
