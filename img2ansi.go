@@ -44,6 +44,8 @@ var Debug = false
 var HTTPUserAgent = ""
 var AlphaThreshold = uint32(0xffff)
 
+var debugProcStartTime = time.Now()
+
 func IsTransparent(c color.Color, threshold uint32) bool {
 	_, _, _, a := c.RGBA()
 	return a < threshold
@@ -106,6 +108,11 @@ func main() {
 	var err error
 	if *useStdin || flag.NArg() == 0 {
 		frames, err = decodeFrames(ctx, os.Stdin, fopts)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else if flag.NArg() == 1 {
+		frames, err = decodeFramesURL(ctx, flag.Arg(0), fopts)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -220,6 +227,9 @@ func LoopFrames(ctx context.Context, frames <-chan *Frame, fopts *FrameOptions) 
 }
 
 func ResizeFrames(ctx context.Context, width, height int, fontAspect float64, frames <-chan *Frame) <-chan *Frame {
+	if width == 0 && height == 0 {
+		return frames
+	}
 	scaled := make(chan *Frame)
 	go func() {
 		defer close(scaled)
@@ -359,6 +369,10 @@ func drawANSIFrames(ctx context.Context, w io.Writer, frames <-chan *ANSIFrame, 
 		case f, ok := <-frames:
 			if !ok {
 				return nil
+			}
+
+			if Debug && nframe == 0 {
+				log.Printf("time to first frame: %s", time.Since(debugProcStartTime))
 			}
 
 			// Delay this animation frame before rendering by setting frameGate
