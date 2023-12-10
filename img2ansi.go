@@ -104,55 +104,16 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	var frames <-chan *Frame
-	var err error
-	if *useStdin || flag.NArg() == 0 {
-		frames, err = decodeFrames(ctx, os.Stdin, fopts)
-		if err != nil {
-			log.Fatal(err)
-		}
-	} else if flag.NArg() == 1 {
-		frames, err = decodeFramesURL(ctx, flag.Arg(0), fopts)
-		if err != nil {
-			log.Fatal(err)
-		}
-	} else {
-		// decode all the images given as arguments and concatenate their
-		// frames.
-		_frames := make(chan *Frame)
-		frames = _frames
-		var frameChans []<-chan *Frame
-		for _, filename := range flag.Args() {
-			frames, err := decodeFramesURL(ctx, filename, fopts)
-			if err != nil {
-				log.Fatal(err)
-			}
-			frameChans = append(frameChans, frames)
-		}
-		go func() {
-			defer close(_frames)
-			for _, frames := range frameChans {
-				for frame := range frames {
-					_frames <- frame
-				}
-			}
-		}()
+	frames, err := decodeFramesArgs(ctx, *useStdin, flag.Args(), fopts)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	// scale frame images to the desired size
 	if *scaleToTerm {
-		*width, *height, err = getTermDim()
+		*width, *height, err = dimensionsFromTerminal(fopts)
 		if err != nil {
 			log.Fatal(err)
 		}
-		if Debug {
-			log.Printf("terminal dimensions: %d x %d", *width, *height)
-		}
-
-		// correct for wrap/overflow due to newlines and padding.
-		*width -= len(fopts.Pad)
-		*width -= 1
-		*height -= 1
 	}
 	scaledFrames := ResizeFrames(ctx, *width, *height, *fontAspect, frames)
 
@@ -164,6 +125,23 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func dimensionsFromTerminal(fopts *FrameOptions) (int, int, error) {
+	w, h, err := getTermDim()
+	if err != nil {
+		return 0, 0, fmt.Errorf("terminal dimensions: %w", err)
+	}
+	if Debug {
+		log.Printf("terminal dimensions: %d x %d", w, h)
+	}
+
+	// correct for wrap/overflow due to newlines and padding.
+	w -= len(fopts.Pad)
+	w -= 1
+	h -= 1
+
+	return w, h, nil
 }
 
 type Frame struct {
@@ -422,6 +400,35 @@ func writeANSIPixels(w *frameBuffer, img image.Image, p ANSIPalette, pad string)
 		w.WriteString(pad)
 		writeansii(ANSIClear)
 		w.WriteString("\n")
+	}
+}
+
+func decodeFramesArgs(ctx context.Context, stdin bool, args []string, fopts *FrameOptions) (<-chan *Frame, error) {
+	if stdin || len(args) == 0 {
+		return decodeFrames(ctx, os.Stdin, fopts)
+	} else if flag.NArg() == 1 {
+		return decodeFramesURL(ctx, flag.Arg(0), fopts)
+	} else {
+		// decode all the images given as arguments and concatenate their
+		// frames.
+		frames := make(chan *Frame)
+		var frameChans []<-chan *Frame
+		for _, filename := range flag.Args() {
+			frames, err := decodeFramesURL(ctx, filename, fopts)
+			if err != nil {
+				return nil, fmt.Errorf("decoding image %s: %w", filename, err)
+			}
+			frameChans = append(frameChans, frames)
+		}
+		go func() {
+			defer close(frames)
+			for _, c := range frameChans {
+				for frame := range c {
+					frames <- frame
+				}
+			}
+		}()
+		return frames, nil
 	}
 }
 
