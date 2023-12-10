@@ -77,14 +77,14 @@ func main() {
 	}
 
 	ctx, done := signal.NotifyContext(context.Background(), os.Interrupt)
+	// TODO: Should done be called in a smarter way?
+	defer done()
 	defer func() {
 		if ctx.Err() != nil {
 			io.WriteString(os.Stdout, ANSIClear)
 			log.Fatal(ctx.Err())
 		}
 	}()
-	// TODO: Should done be called in a smarter way?
-	defer done()
 
 	AlphaThreshold = uint32(*alphaThreshold * float64(0xffff))
 
@@ -432,7 +432,7 @@ func decodeFramesHTTP(ctx context.Context, u string, fopts *FrameOptions) (<-cha
 	client := http.Client{
 		Timeout: 10 * time.Second,
 	}
-	req, err := http.NewRequest("GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
 	}
