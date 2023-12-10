@@ -15,6 +15,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"image"
@@ -75,24 +76,15 @@ func main() {
 		log.Fatal("no arguments are expected when -stdin provided")
 	}
 
-	stop := make(chan struct{})
-	var gotsignal *os.Signal
+	ctx, done := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer func() {
-		if gotsignal != nil {
+		if ctx.Err() != nil {
 			io.WriteString(os.Stdout, ANSIClear)
-			log.Fatal(*gotsignal)
+			log.Fatal(ctx.Err())
 		}
 	}()
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
-	go func() {
-		for s := range sig {
-			signal.Stop(sig)
-			s := s
-			gotsignal = &s
-			close(stop)
-		}
-	}()
+	// TODO: Should done be called in a smarter way?
+	defer done()
 
 	AlphaThreshold = uint32(*alphaThreshold * float64(0xffff))
 
@@ -113,7 +105,7 @@ func main() {
 	var frames <-chan *Frame
 	var err error
 	if *useStdin || flag.NArg() == 0 {
-		frames, err = decodeFrames(os.Stdin, stop, fopts)
+		frames, err = decodeFrames(ctx, os.Stdin, fopts)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -124,7 +116,7 @@ func main() {
 		frames = _frames
 		var frameChans []<-chan *Frame
 		for _, filename := range flag.Args() {
-			frames, err := decodeFramesURL(filename, stop, fopts)
+			frames, err := decodeFramesURL(ctx, filename, fopts)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -155,13 +147,13 @@ func main() {
 		*width -= 1
 		*height -= 1
 	}
-	scaledFrames := ResizeFrames(*width, *height, *fontAspect, frames, stop)
+	scaledFrames := ResizeFrames(ctx, *width, *height, *fontAspect, frames)
 
-	loopedFrames := LoopFrames(scaledFrames, stop, fopts)
+	loopedFrames := LoopFrames(ctx, scaledFrames, fopts)
 
-	ansiFrames := writeANSIFrames(loopedFrames, palette, fopts, stop)
+	ansiFrames := writeANSIFrames(ctx, loopedFrames, palette, fopts)
 
-	err = drawANSIFrames(os.Stdout, ansiFrames, stop, fopts)
+	err = drawANSIFrames(ctx, os.Stdout, ansiFrames, fopts)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -179,7 +171,7 @@ type ANSIFrame struct {
 	LoopCount int
 }
 
-func LoopFrames(frames <-chan *Frame, stop <-chan struct{}, fopts *FrameOptions) <-chan *Frame {
+func LoopFrames(ctx context.Context, frames <-chan *Frame, fopts *FrameOptions) <-chan *Frame {
 	var allFrames []*Frame
 	looped := make(chan *Frame)
 	go func() {
@@ -188,7 +180,7 @@ func LoopFrames(frames <-chan *Frame, stop <-chan struct{}, fopts *FrameOptions)
 	collectFrames:
 		for {
 			select {
-			case <-stop:
+			case <-ctx.Done():
 				return
 			case f, ok := <-frames:
 				if !ok {
@@ -196,7 +188,7 @@ func LoopFrames(frames <-chan *Frame, stop <-chan struct{}, fopts *FrameOptions)
 				}
 				allFrames = append(allFrames, f)
 				select {
-				case <-stop:
+				case <-ctx.Done():
 					return
 				case looped <- f:
 				}
@@ -217,7 +209,7 @@ func LoopFrames(frames <-chan *Frame, stop <-chan struct{}, fopts *FrameOptions)
 		for n := 0; n != numloop; n++ {
 			for _, f := range allFrames {
 				select {
-				case <-stop:
+				case <-ctx.Done():
 					return
 				case looped <- f:
 				}
@@ -227,14 +219,14 @@ func LoopFrames(frames <-chan *Frame, stop <-chan struct{}, fopts *FrameOptions)
 	return looped
 }
 
-func ResizeFrames(width, height int, fontAspect float64, frames <-chan *Frame, stop <-chan struct{}) <-chan *Frame {
+func ResizeFrames(ctx context.Context, width, height int, fontAspect float64, frames <-chan *Frame) <-chan *Frame {
 	scaled := make(chan *Frame)
 	go func() {
 		defer close(scaled)
 		// resize the images to the proper size and aspect ratio
 		for {
 			select {
-			case <-stop:
+			case <-ctx.Done():
 				return
 			case f, ok := <-frames:
 				if !ok {
@@ -280,7 +272,7 @@ type FrameOptions struct {
 	Repeat int
 }
 
-func writeANSIFrames(frames <-chan *Frame, p ANSIPalette, opts *FrameOptions, stop <-chan struct{}) <-chan *ANSIFrame {
+func writeANSIFrames(ctx context.Context, frames <-chan *Frame, p ANSIPalette, opts *FrameOptions) <-chan *ANSIFrame {
 	draw := make(chan *ANSIFrame)
 
 	go func() {
@@ -294,7 +286,7 @@ func writeANSIFrames(frames <-chan *Frame, p ANSIPalette, opts *FrameOptions, st
 
 		for {
 			select {
-			case <-stop:
+			case <-ctx.Done():
 				return
 			case f, ok := <-frames:
 				if !ok {
@@ -321,7 +313,7 @@ func writeANSIFrames(frames <-chan *Frame, p ANSIPalette, opts *FrameOptions, st
 				}
 
 				select {
-				case <-stop:
+				case <-ctx.Done():
 					return
 				case draw <- b:
 				}
@@ -335,7 +327,7 @@ func writeANSIFrames(frames <-chan *Frame, p ANSIPalette, opts *FrameOptions, st
 
 // drawANSIFrames encodes images received over frames as ANSI escape sequences
 // using p and writes them to w.  drawANSIFrames does not use opts.Repeat.
-func drawANSIFrames(w io.Writer, frames <-chan *ANSIFrame, stop <-chan struct{}, opts *FrameOptions) error {
+func drawANSIFrames(ctx context.Context, w io.Writer, frames <-chan *ANSIFrame, opts *FrameOptions) error {
 	animate := opts != nil && opts.Animate
 
 	// frameGate receives a value when a frame is ready to be drawn. The value
@@ -362,7 +354,7 @@ func drawANSIFrames(w io.Writer, frames <-chan *ANSIFrame, stop <-chan struct{},
 
 	for {
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return nil
 		case f, ok := <-frames:
 			if !ok {
@@ -419,24 +411,24 @@ func writeANSIPixels(w *frameBuffer, img image.Image, p ANSIPalette, pad string)
 	}
 }
 
-func decodeFramesURL(urlstr string, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
+func decodeFramesURL(ctx context.Context, urlstr string, fopts *FrameOptions) (<-chan *Frame, error) {
 	u, err := url.Parse(urlstr)
 	if err != nil {
 		return nil, err
 	}
 	if u.Scheme == "" {
-		return decodeFramesFile(urlstr, stop, fopts)
+		return decodeFramesFile(ctx, urlstr, fopts)
 	}
 	if u.Scheme == "file" {
-		return decodeFramesFile(u.Path, stop, fopts)
+		return decodeFramesFile(ctx, u.Path, fopts)
 	}
 	if u.Scheme == "http" || u.Scheme == "https" {
-		return decodeFramesHTTP(urlstr, stop, fopts)
+		return decodeFramesHTTP(ctx, urlstr, fopts)
 	}
 	return nil, fmt.Errorf("unrecognized url: %v", urlstr)
 }
 
-func decodeFramesHTTP(u string, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
+func decodeFramesHTTP(ctx context.Context, u string, fopts *FrameOptions) (<-chan *Frame, error) {
 	client := http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -468,22 +460,22 @@ func decodeFramesHTTP(u string, stop <-chan struct{}, fopts *FrameOptions) (<-ch
 	}
 	switch resp.Header.Get("Content-Type") {
 	case "application/octet-stream", "image/png", "image/gif", "image/jpeg":
-		return decodeFrames(resp.Body, stop, fopts)
+		return decodeFrames(ctx, resp.Body, fopts)
 	default:
 		return nil, fmt.Errorf("mime: %v %v", resp.Header.Get("Content-Type"), u)
 	}
 }
 
-func decodeFramesFile(filename string, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
+func decodeFramesFile(ctx context.Context, filename string, fopts *FrameOptions) (<-chan *Frame, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return decodeFrames(f, stop, fopts)
+	return decodeFrames(ctx, f, fopts)
 }
 
-func decodeFrames(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
+func decodeFrames(ctx context.Context, r io.Reader, fopts *FrameOptions) (<-chan *Frame, error) {
 	var confbuf bytes.Buffer
 	_, format, err := image.DecodeConfig(io.TeeReader(r, &confbuf))
 	if err != nil {
@@ -491,7 +483,7 @@ func decodeFrames(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-cha
 	}
 	r = io.MultiReader(&confbuf, r)
 	if format == "gif" {
-		return decodeFramesGIF(r, stop, fopts)
+		return decodeFramesGIF(ctx, r, fopts)
 	}
 
 	c := make(chan *Frame, 1)
@@ -506,7 +498,7 @@ func decodeFrames(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-cha
 	return c, nil
 }
 
-func decodeFramesGIF(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-chan *Frame, error) {
+func decodeFramesGIF(ctx context.Context, r io.Reader, fopts *FrameOptions) (<-chan *Frame, error) {
 	img, err := gif.DecodeAll(r)
 	if err != nil {
 		return nil, err
@@ -515,7 +507,7 @@ func decodeFramesGIF(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-
 	renderer := newGIFRenderer(img, func(b image.Rectangle) draw.Image { return image.NewRGBA64(b) })
 	for renderer.RenderNext() {
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return nil, fmt.Errorf("gif rendering interrupted")
 		default:
 		}
@@ -534,7 +526,7 @@ func decodeFramesGIF(r io.Reader, stop <-chan struct{}, fopts *FrameOptions) (<-
 			}
 
 			select {
-			case <-stop:
+			case <-ctx.Done():
 				return
 			case c <- f:
 			}
